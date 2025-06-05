@@ -308,6 +308,17 @@ Subsequent to the initial alignment efforts described above, model runs indicate
             ```
         *   This change means `osemosys.txt` now intentionally deviates from the literal translation of `osemosys.py` for this specific line to ensure model integrity and feasibility.
 
-## 6. Conclusion
+## 6. Output Formatting Changes
 
-The `osemosys.txt` file has been modified to reflect the mathematical logic of `osemosys.py` as closely as possible. Key parameters and constraint formulations were adjusted to align with `osemosys.py`'s approach to economic calculations (e.g., capital costs, salvage values) and specific conditional logic. One specific modification to the storage balancing equation `S11_and_S12_StorageLevelDayTypeStart` was made post-initial alignment to address feasibility concerns, thereby prioritizing model robustness for that constraint over a strict line-by-line equivalence with the `osemosys.py` version. The goal is to have a functionally equivalent and solvable MathProg model.
+This section documents changes related to the output generation part of the model.
+
+*   **Change Description:** Removed detailed CSV output `table` sections.
+*   **Files Affected:** `osemosys.txt`
+*   **Reason for Modification:** To align with user request and structural guidance from the user-provided `osemosys1.txt` reference file, which also had these sections removed. This change affects only the detailed output generation and not the core model logic or its solution.
+*   **Details of Modification:**
+    *   All `table ... OUT "CSV" ... ;` blocks, starting from `table AccumulatedNewCapacityResults` down to the last `table UseByTechnologyResults ...;`, were removed from the end of the `osemosys.txt` file.
+    *   The `printf` statements for generating `SelectedResults.csv` were retained.
+
+## 7. Conclusion
+
+The `osemosys.txt` file has been modified to reflect the mathematical logic of `osemosys.py` as closely as possible. Key parameters and constraint formulations were adjusted to align with `osemosys.py`'s approach to economic calculations (e.g., capital costs, salvage values) and specific conditional logic. One specific modification to the storage balancing equation `S11_and_S12_StorageLevelDayTypeStart` was made post-initial alignment to address feasibility concerns, thereby prioritizing model robustness for that constraint over a strict line-by-line equivalence with the `osemosys.py` version. Output formatting has also been streamlined by removing detailed `table` statements. The goal is to have a functionally equivalent and solvable MathProg model that produces a concise summary output.
