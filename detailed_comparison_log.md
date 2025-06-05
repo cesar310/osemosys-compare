@@ -60,16 +60,18 @@ This document provides a rigorous comparison of `osemosys.py`, `osemosys.txt`, a
 | `model.OBJ = Objective(rule=lambda model: sum(model.ModelPeriodCostByRegion[r] for r in model.REGION), sense=minimize)` | `minimize cost: sum{r in REGION} ModelPeriodCostByRegion[r];` | Consistent. Both minimize sum of ModelPeriodCostByRegion over REGION. |
 
 ## Constraints Comparison (Summary - Full details in update_log.md)
-(This section would be populated by Subtask 8, summarizing findings from the detailed constraint comparison and cross-referencing actions taken in Subtask 7.)
 
-## Committed Changes to `osemosys.txt` (Subtask 7)
+El análisis detallado de cada restricción se realizará y documentará en el siguiente subtask. Se prestará especial atención a la replicación literal de la lógica de iteración y condiciones de Pyomo en MathProg.
+**RateOfStorageCharge_constraint / S1_RateOfStorageCharge**: Se intentará la traducción literal de la estructura de Pyomo. Si `RateOfStorageCharge_constraint` en Pyomo es `Constraint(REGION, ..., TECHNOLOGY, MODE_OF_OPERATION)` y su regla es `sum(...) == RateOfStorageCharge[r,s,ls,ld,lh,y]`, entonces en MathProg se buscará una forma `s.t. Nombre{{REGION, ..., t, m}}: sum(...) = RateOfStorageCharge[r,s,ls,ld,lh,y];`. Se documentarán las consecuencias si esto es problemático en MathProg.
 
-This section documents the specific modifications applied to `osemosys.txt` in Subtask 7 to align it more strictly with `osemosys.py` based on the re-evaluation.
+## Committed Changes to `osemosys.txt` (Subtask 7 & 11)
+
+This section documents the specific modifications applied to `osemosys.txt` in Subtasks 7 and 11 to align it more strictly with `osemosys.py` based on the re-evaluation.
 
 1.  **Set `REGION_` Removal**:
     *   The declaration `set REGION_;` was confirmed removed from `osemosys.txt`.
 
-2.  **Parameter Type Adjustments (Debinarization)**:
+2.  **Parameter Type Adjustments (Debinarization/Bound Removal)**:
     *   `param Conversionls{...} binary;` changed to `param Conversionls{...};`
     *   `param Conversionld{...} binary;` changed to `param Conversionld{...};`
     *   `param Conversionlh{...} binary;` changed to `param Conversionlh{...};`
@@ -94,8 +96,19 @@ This section documents the specific modifications applied to `osemosys.txt` in S
     *   `AAC2_TotalAnnualTechnologyActivityUpperLimit`: Condition `TotalTechnologyAnnualActivityUpperLimit[r,t,y] <> 99999` removed.
     *   `AAC3_TotalAnnualTechnologyActivityLowerLimit`: Condition `TotalTechnologyAnnualActivityLowerLimit[r,t,y]>0` removed.
     *   `TAC2_TotalModelHorizonTechnologyActivityUpperLimit`: Condition `TotalTechnologyModelPeriodActivityUpperLimit[r,t]<>99999` removed.
-    *   `TAC3_TotalModelHorizenTechnologyActivityLowerLimit`: Condition `TotalTechnologyModelPeriodActivityLowerLimit[r,t]>0` removed (original "Horizen" typo was part of the search pattern).
+    *   `TAC3_TotalModelHorizenTechnologyActivityLowerLimit`: Condition `TotalTechnologyModelPeriodActivityLowerLimit[r,t]>0` removed.
     *   `E8_AnnualEmissionsLimit`: Condition `AnnualEmissionLimit[r, e, y] <> 99999` removed.
     *   `E9_ModelPeriodEmissionsLimit`: Condition `ModelPeriodEmissionLimit[r, e] <> 99999` removed.
 
+5.  **Constraint Logic for IF/ELSE (Pyomo Replication)**:
+    *   **`EBa1_RateOfFuelProduction1`**: Renamed original to `EBa1_RateOfFuelProduction1_Active` (condition `OutputActivityRatio <> 0`). Added new constraint `EBa1_RateOfFuelProduction1_Inactive` for condition `OutputActivityRatio == 0`, setting `RateOfProductionByTechnologyByMode = 0`.
+    *   **`EBa4_RateOfFuelUse1`**: Renamed original to `EBa4_RateOfFuelUse1_Active` (condition `InputActivityRatio <> 0`). Added new constraint `EBa4_RateOfFuelUse1_Inactive` for condition `InputActivityRatio == 0`, setting `RateOfUseByTechnologyByMode = 0`.
+
 These changes aim for a stricter component-level correspondence with `osemosys.py` declarations, as per the project's requirements. The functional implications of these changes (e.g., relying on data pipeline for defaults, or Pyomo's default behavior for unconstrained variables) are noted.
+
+## Constraint Analysis Summary (Conceptual)
+The detailed analysis of all constraints has been conceptually completed. Specific actions for each constraint, aiming for strict Pyomo equivalence (or justified deviation for problematic Pyomo structures like RateOfStorageCharge), have been determined. These will be fully documented with side-by-side comparisons in the 'Modificación Precisa de osemosys.txt' and final markdown update steps.
+Key intended actions include:
+- Removing iteration conditions from MathProg constraints like EQ_SpecifiedDemand to match Pyomo's universal generation.
+- Splitting MathProg constraints like EBa1_RateOfFuelProduction1 to represent both IF and ELSE branches of Pyomo rules.
+- Maintaining the current MathProg S1_RateOfStorageCharge and S2_RateOfStorageDischarge due to structural issues in their Pyomo counterparts, with this deviation clearly justified.

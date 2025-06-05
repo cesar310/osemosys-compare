@@ -369,12 +369,17 @@ s.t. CAb1_PlannedMaintenance{r in REGION, t in TECHNOLOGY, y in YEAR}:
 #
 #########	        Energy Balance A    	 	#############
 #
-s.t. EBa1_RateOfFuelProduction1{
+s.t. EBa1_RateOfFuelProduction1_Active{
 	r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
 	OutputActivityRatio[r,t,f,m,y] <> 0}:
 	RateOfActivity[r,l,t,m,y] * OutputActivityRatio[r,t,f,m,y]
 	=
 	RateOfProductionByTechnologyByMode[r,l,t,m,f,y];
+
+s.t. EBa1_RateOfFuelProduction1_Inactive{
+	r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
+	OutputActivityRatio[r,t,f,m,y] == 0}:
+	RateOfProductionByTechnologyByMode[r,l,t,m,f,y] = 0;
 
 s.t. EBa2_RateOfFuelProduction2{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, y in YEAR:
 								(sum{m in MODE_OF_OPERATION} OutputActivityRatio[r,t,f,m,y]) <> 0}:
@@ -388,11 +393,15 @@ s.t. EBa3_RateOfFuelProduction3{r in REGION, l in TIMESLICE, f in FUEL, y in YEA
 	=
 	RateOfProduction[r,l,f,y];
 
-s.t. EBa4_RateOfFuelUse1{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
+s.t. EBa4_RateOfFuelUse1_Active{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
 						 InputActivityRatio[r,t,f,m,y] <> 0}:
 	RateOfActivity[r,l,t,m,y] * InputActivityRatio[r,t,f,m,y]
 	=
 	RateOfUseByTechnologyByMode[r,l,t,m,f,y];
+
+s.t. EBa4_RateOfFuelUse1_Inactive{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
+						 InputActivityRatio[r,t,f,m,y] == 0}:
+	RateOfUseByTechnologyByMode[r,l,t,m,f,y] = 0;
 
 s.t. EBa5_RateOfFuelUse2{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, y in YEAR:
 						 sum{m in MODE_OF_OPERATION} InputActivityRatio[r,t,f,m,y] <> 0}:
