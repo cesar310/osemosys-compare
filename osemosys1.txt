@@ -1,17 +1,49 @@
-# OSeMOSYS_GMPL
+# OSeMOSYS_2017_11_08
 #
 # Open Source energy MOdeling SYStem
-# Translated from Pyomo (osemosys.py) to GNU MathProg
-# Based on reference osemosys.txt
-
+#
+# Modified by Francesco Gardumi, Constantinos Taliotis, Igor Tatarewicz, Adrian Lefvert
+# Main changes to previous version OSeMOSYS_2016_08_01
+# Bug fixed in:
+#		- Equation E1
+#
+# Additional modifications by David Romero (DR) for mathematical equivalence with Pyomo version:
+# - Changed SpecifiedAnnualDemand condition from '<> 0' to '> 0' for consistency
+# - Added conditional constraint for RateOfFuelProduction2 to match Pyomo implementation
+# - Updated EnergyBalanceEachTS3 condition to use '> 0' instead of '<> 0'
+# - These changes maintain mathematical equivalence while improving numerical robustness
+# ============================================================================
+#
+#    Copyright [2010-2015] [OSeMOSYS Forum steering committee see: www.osemosys.org]
+#
+#   Licensed under the Apache License, Version 2.0 (the "License");
+#   you may not use this file except in compliance with the License.
+#   You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+#   Unless required by applicable law or agreed to in writing, software
+#   distributed under the License is distributed on an "AS IS" BASIS,
+#   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#   See the License for the specific language governing permissions and
+#   limitations under the License.
+# ============================================================================
+#
+																																																																																																																																																																																																							   
+ 
+#  To run OSeMOSYS, enter the following line into your command prompt:
+#
+#  glpsol -m osemosys.txt -d datafile.txt -o results.txt
+																																																																																																																																																																										  
+#
 #              			#########################################
 ######################			Model Definition				#############
 #              			#########################################
-
+#
 ###############
 #    Sets     #
 ###############
-
+#
 set YEAR;
 set TECHNOLOGY;
 set TIMESLICE;
@@ -19,169 +51,138 @@ set FUEL;
 set EMISSION;
 set MODE_OF_OPERATION;
 set REGION;
+set REGION_;
 set SEASON;
 set DAYTYPE;
 set DAILYTIMEBRACKET;
-# set FLEXIBLEDEMANDTYPE; # Not used in osemosys.txt, and osemosys.py variables/constraints using it are commented out or not present
+set FLEXIBLEDEMANDTYPE;
 set STORAGE;
-
+#
 #####################
 #    Parameters     #
 #####################
-
+#
 ########			Global 						#############
+#
+param YearSplit{l in TIMESLICE, y in YEAR};
 
-param ResultsPath, symbolic default 'results'; # From osemosys.txt
+param DiscountRate{r in REGION};
 
-param YearSplit{l in TIMESLICE, y in YEAR}; # From osemosys.py: model.YearSplit = Param(model.TIMESLICE, model.YEAR)
-param DiscountRate{r in REGION}; # From osemosys.py: model.DiscountRate = Param(model.REGION, default=0.05)
-                                 # Default handled by data file in MathProg
+param OperationalLife{r in REGION, t in TECHNOLOGY};
 
-# Calculated parameters from osemosys.txt, logic adapted from osemosys.py where applicable
-param DiscountRateIdv{r in REGION, t in TECHNOLOGY}, default DiscountRate[r]; # From osemosys.txt
+param DaySplit{lh in DAILYTIMEBRACKET, y in YEAR};
+param Conversionls{l in TIMESLICE, ls in SEASON} binary;
+param Conversionld{l in TIMESLICE, ld in DAYTYPE} binary;
+param Conversionlh{l in TIMESLICE, lh in DAILYTIMEBRACKET} binary;
+param DaysInDayType{ls in SEASON, ld in DAYTYPE, y in YEAR};
+param TradeRoute {r in REGION, rr in REGION, f in FUEL, y in YEAR} binary;
+param DepreciationMethod{r in REGION};
 
-param DiscountFactor{r in REGION, y in YEAR} :=
-	(1 + DiscountRate[r]) ^ (y - (min{yy in YEAR} yy) + 0.0); # Adjusted min year access
-param DiscountFactorMid{r in REGION, y in YEAR} :=
-	(1 + DiscountRate[r]) ^ (y - (min{yy in YEAR} yy) + 0.5); # Adjusted min year access
-
-param OperationalLife{r in REGION, t in TECHNOLOGY}; # From osemosys.py
-
-# CapitalRecoveryFactor and PvAnnuity are more complex, derived from osemosys.txt logic
-# In osemosys.py, these calculations are embedded within cost constraint rules if not explicitly parameters.
-# osemosys.txt defines them as parameters, which is good for clarity.
-param CapitalRecoveryFactor{r in REGION, t in TECHNOLOGY} :=
-    if DiscountRateIdv[r,t] > 0 then
-        (DiscountRateIdv[r,t] * (1 + DiscountRateIdv[r,t])^OperationalLife[r,t]) / ((1 + DiscountRateIdv[r,t])^OperationalLife[r,t]-1)
-    else
-        1/OperationalLife[r,t]; # Simplified for DiscountRateIdv = 0 to avoid division by zero, common CRF definition
-
-param PvAnnuity{r in REGION, t in TECHNOLOGY} :=
-    if DiscountRateIdv[r,t] > 0 then
-        (1 - (1 + DiscountRateIdv[r,t])^(-OperationalLife[r,t])) / DiscountRateIdv[r,t]
-    else
-        OperationalLife[r,t]; # Simplified for DiscountRateIdv = 0
-
-# Storage related discount factors from osemosys.txt (Not explicitly in osemosys.py as separate params but logic implied)
-# Assuming DiscountRate for storage is same as regional if not specified, like DiscountRateIdv
-# However, osemosys.txt has DiscountRateStorage{r in REGION, s in STORAGE}. We need this.
-param DiscountRateStorage{r in REGION, s in STORAGE}, default DiscountRate[r]; # Defaulting to regional if not given for storage
-param DiscountFactorStorage{r in REGION, s in STORAGE, y in YEAR} :=
-	(1 + DiscountRateStorage[r,s]) ^ (y - (min{yy in YEAR} yy) + 0.0);
-param DiscountFactorMidStorage{r in REGION, s in STORAGE, y in YEAR} :=
-	(1 + DiscountRateStorage[r,s]) ^ (y - (min{yy in YEAR} yy) + 0.5);
-
-param DaySplit{lh in DAILYTIMEBRACKET, y in YEAR}; # From osemosys.py: model.DaySplit = Param(model.DAILYTIMEBRACKET, model.YEAR, default=0.00137)
-param Conversionls{l in TIMESLICE, ls in SEASON} binary; # From osemosys.py: model.Conversionls = Param(model.TIMESLICE, model.SEASON, default=0)
-param Conversionld{l in TIMESLICE, ld in DAYTYPE} binary; # From osemosys.py: model.Conversionld = Param(model.TIMESLICE, model.DAYTYPE, default=0)
-param Conversionlh{l in TIMESLICE, lh in DAILYTIMEBRACKET} binary; # From osemosys.py: model.Conversionlh = Param(model.TIMESLICE, model.DAILYTIMEBRACKET, default=0)
-param DaysInDayType{ls in SEASON, ld in DAYTYPE, y in YEAR}; # From osemosys.py: model.DaysInDayType = Param(model.SEASON, model.DAYTYPE, model.YEAR, default=7)
-param TradeRoute{r in REGION, rr in REGION, f in FUEL, y in YEAR} binary; # From osemosys.py, ensure indices match osemosys.txt (r, rr)
-param DepreciationMethod{r in REGION}; # From osemosys.py: model.DepreciationMethod = Param(model.REGION, default=1)
-
+#
 ########			Demands 					#############
-
-param SpecifiedAnnualDemand{r in REGION, f in FUEL, y in YEAR}; # Default 0
-param SpecifiedDemandProfile{r in REGION, f in FUEL, l in TIMESLICE, y in YEAR}; # Default 0
-param AccumulatedAnnualDemand{r in REGION, f in FUEL, y in YEAR}; # Default 0
-
+#
+param SpecifiedAnnualDemand{r in REGION, f in FUEL, y in YEAR};
+param SpecifiedDemandProfile{r in REGION, f in FUEL, l in TIMESLICE, y in YEAR};
+param AccumulatedAnnualDemand{r in REGION, f in FUEL, y in YEAR};
+#
 #########			Performance					#############
+#
+param CapacityToActivityUnit{r in REGION, t in TECHNOLOGY};
+param CapacityFactor{r in REGION, t in TECHNOLOGY, l in TIMESLICE, y in YEAR};
+param AvailabilityFactor{r in REGION, t in TECHNOLOGY, y in YEAR};
 
-param CapacityToActivityUnit{r in REGION, t in TECHNOLOGY}; # Default 1
-param CapacityFactor{r in REGION, t in TECHNOLOGY, l in TIMESLICE, y in YEAR}; # Default 1
-param AvailabilityFactor{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 1
-# OperationalLife already defined under Global
-param ResidualCapacity{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-param InputActivityRatio{r in REGION, t in TECHNOLOGY, f in FUEL, m in MODE_OF_OPERATION, y in YEAR}; # Default 0
-param OutputActivityRatio{r in REGION, t in TECHNOLOGY, f in FUEL, m in MODE_OF_OPERATION, y in YEAR}; # Default 0
-
+param ResidualCapacity{r in REGION, t in TECHNOLOGY, y in YEAR};
+param InputActivityRatio{r in REGION, t in TECHNOLOGY, f in FUEL, m in MODE_OF_OPERATION, y in YEAR};
+param OutputActivityRatio{r in REGION, t in TECHNOLOGY, f in FUEL, m in MODE_OF_OPERATION, y in YEAR};
+#
 #########			Technology Costs			#############
-
-param CapitalCost{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0.000001
-param VariableCost{r in REGION, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR}; # Default 0.000001
-param FixedCost{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-
+#
+param CapitalCost{r in REGION, t in TECHNOLOGY, y in YEAR};
+param VariableCost{r in REGION, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR};
+param FixedCost{r in REGION, t in TECHNOLOGY, y in YEAR};
+#
 #########           		Storage                 		#############
-
-param TechnologyToStorage{r in REGION, t in TECHNOLOGY, s in STORAGE, m in MODE_OF_OPERATION}; # Default 0
-param TechnologyFromStorage{r in REGION, t in TECHNOLOGY, s in STORAGE, m in MODE_OF_OPERATION}; # Default 0
-param StorageLevelStart{r in REGION, s in STORAGE}; # Default 0.0000001
-param StorageMaxChargeRate{r in REGION, s in STORAGE}; # Default 99999
-param StorageMaxDischargeRate{r in REGION, s in STORAGE}; # Default 99999
-param MinStorageCharge{r in REGION, s in STORAGE, y in YEAR}; # Default 0
-param OperationalLifeStorage{r in REGION, s in STORAGE}; # Default 0
-param CapitalCostStorage{r in REGION, s in STORAGE, y in YEAR}; # Default 0
-param ResidualStorageCapacity{r in REGION, s in STORAGE, y in YEAR}; # Default 0
-
+#
+param TechnologyToStorage{r in REGION, t in TECHNOLOGY, s in STORAGE, m in MODE_OF_OPERATION};
+param TechnologyFromStorage{r in REGION, t in TECHNOLOGY, s in STORAGE, m in MODE_OF_OPERATION};
+param StorageLevelStart{r in REGION, s in STORAGE};
+param StorageMaxChargeRate{r in REGION, s in STORAGE};
+param StorageMaxDischargeRate{r in REGION, s in STORAGE};
+param MinStorageCharge{r in REGION, s in STORAGE, y in YEAR};
+param OperationalLifeStorage{r in REGION, s in STORAGE};
+param CapitalCostStorage{r in REGION, s in STORAGE, y in YEAR};
+param ResidualStorageCapacity{r in REGION, s in STORAGE, y in YEAR};
+#
 #########			Capacity Constraints		#############
-
-param CapacityOfOneTechnologyUnit{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-param TotalAnnualMaxCapacity{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 99999
-param TotalAnnualMinCapacity{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-
+#
+param CapacityOfOneTechnologyUnit{r in REGION, t in TECHNOLOGY, y in YEAR};
+param TotalAnnualMaxCapacity{r in REGION, t in TECHNOLOGY, y in YEAR};
+param TotalAnnualMinCapacity{r in REGION, t in TECHNOLOGY, y in YEAR};
+#
 #########			Investment Constraints		#############
-
-param TotalAnnualMaxCapacityInvestment{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 99999
-param TotalAnnualMinCapacityInvestment{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-
+#
+param TotalAnnualMaxCapacityInvestment{r in REGION, t in TECHNOLOGY, y in YEAR};
+param TotalAnnualMinCapacityInvestment{r in REGION, t in TECHNOLOGY, y in YEAR};
+#
 #########			Activity Constraints		#############
-
-param TotalTechnologyAnnualActivityUpperLimit{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 99999
-param TotalTechnologyAnnualActivityLowerLimit{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-param TotalTechnologyModelPeriodActivityUpperLimit{r in REGION, t in TECHNOLOGY}; # Default 99999
-param TotalTechnologyModelPeriodActivityLowerLimit{r in REGION, t in TECHNOLOGY}; # Default 0
-
+#
+param TotalTechnologyAnnualActivityUpperLimit{r in REGION, t in TECHNOLOGY, y in YEAR};
+param TotalTechnologyAnnualActivityLowerLimit{r in REGION, t in TECHNOLOGY, y in YEAR};
+param TotalTechnologyModelPeriodActivityUpperLimit{r in REGION, t in TECHNOLOGY};
+param TotalTechnologyModelPeriodActivityLowerLimit{r in REGION, t in TECHNOLOGY};
+#
 #########			Reserve Margin				#############
-
-param ReserveMarginTagTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}; # Default 0
-param ReserveMarginTagFuel{r in REGION, f in FUEL, y in YEAR} binary; # Default 0
-param ReserveMargin{r in REGION, y in YEAR}; # Default 1
-
+#
+param ReserveMarginTagTechnology{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0 <= 1;
+param ReserveMarginTagFuel{r in REGION, f in FUEL, y in YEAR} binary;
+param ReserveMargin{r in REGION, y in YEAR};
+#
 #########			RE Generation Target		#############
-
-param RETagTechnology{r in REGION, t in TECHNOLOGY, y in YEAR} binary; # Default 0
-param RETagFuel{r in REGION, f in FUEL, y in YEAR} binary; # Default 0
-param REMinProductionTarget{r in REGION, y in YEAR}; # Default 0
-
+#
+param RETagTechnology{r in REGION, t in TECHNOLOGY, y in YEAR} binary;
+param RETagFuel{r in REGION, f in FUEL, y in YEAR} binary;
+param REMinProductionTarget{r in REGION, y in YEAR};
+#
 #########			Emissions & Penalties		#############
-
-param EmissionActivityRatio{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR}; # Default 0
-param EmissionsPenalty{r in REGION, e in EMISSION, y in YEAR}; # Default 0
-param AnnualExogenousEmission{r in REGION, e in EMISSION, y in YEAR}; # Default 0
-param AnnualEmissionLimit{r in REGION, e in EMISSION, y in YEAR}; # Default 99999
-param ModelPeriodExogenousEmission{r in REGION, e in EMISSION}; # Default 0
-param ModelPeriodEmissionLimit{r in REGION, e in EMISSION}; # Default 99999
-
+#
+param EmissionActivityRatio{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR};
+param EmissionsPenalty{r in REGION, e in EMISSION, y in YEAR};
+param AnnualExogenousEmission{r in REGION, e in EMISSION, y in YEAR};
+param AnnualEmissionLimit{r in REGION, e in EMISSION, y in YEAR};
+param ModelPeriodExogenousEmission{r in REGION, e in EMISSION};
+param ModelPeriodEmissionLimit{r in REGION, e in EMISSION};
+#
+																																																																															
+##############
+##
 ########################################################################
 #   Check statements to carry out simple debugging in model parameters #
 ########################################################################
 
-# Copied from osemosys.txt for consistency
-
 ##### 'Capacity investment' check  #####
 printf "Checking Max and Min capcity-investment bounds for r in REGION, t in TECHNOLOGY, y in YEAR \n";
 #
-check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalAnnualMaxCapacityInvestment[r, t, y]<>-1 && TotalAnnualMinCapacityInvestment[r, t, y]<>0}: TotalAnnualMaxCapacityInvestment[r, t, y]>=TotalAnnualMinCapacityInvestment[r, t, y];
+check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalAnnualMaxCapacityInvestment[r, t, y]<>99999 && TotalAnnualMinCapacityInvestment[r, t, y]<>0}: TotalAnnualMaxCapacityInvestment[r, t, y]>=TotalAnnualMinCapacityInvestment[r, t, y];
 #
 ##### 'Annual Activity' check  #####
 printf "Checking Annual activity limits for r in REGION, t in TECHNOLOGY, y in YEAR \n";
 #
-check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalTechnologyAnnualActivityUpperLimit[r,t,y]<>-1 && TotalTechnologyAnnualActivityUpperLimit[r,t,y]<>0 && TotalTechnologyAnnualActivityLowerLimit[r,t,y]<>0}: TotalTechnologyAnnualActivityUpperLimit[r,t,y]>=TotalTechnologyAnnualActivityLowerLimit[r,t,y];
+check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalTechnologyAnnualActivityUpperLimit[r,t,y]<>99999 && TotalTechnologyAnnualActivityUpperLimit[r,t,y]<>0 && TotalTechnologyAnnualActivityLowerLimit[r,t,y]<>0}: TotalTechnologyAnnualActivityUpperLimit[r,t,y]>=TotalTechnologyAnnualActivityLowerLimit[r,t,y];
 #
 ##### 'Capacity' check 1   #####
 printf "Checking Residual and TotalAnnualMax Capacity for r in REGION, t in TECHNOLOGY, y in YEAR \n";
 #
-check{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMaxCapacity[r,t,y]<>-1 && ResidualCapacity[r,t,y]<>0}: TotalAnnualMaxCapacity[r,t,y] >= ResidualCapacity[r,t,y];
+check{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMaxCapacity[r,t,y]<>99999 && ResidualCapacity[r,t,y]<>0}: TotalAnnualMaxCapacity[r,t,y] >= ResidualCapacity[r,t,y];
 #
 ##### 'Capacity' check 2   #####
 printf "Checking Residual, Total annual maxcap and mincap investments for  all Region, Tech and Year \n";
 #
-check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalAnnualMaxCapacity[r,t,y]<>-1 && ResidualCapacity[r,t,y]<>0}: TotalAnnualMaxCapacity[r,t,y]>= ResidualCapacity[r,t,y] + TotalAnnualMinCapacityInvestment[r,t,y];
+check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalAnnualMaxCapacity[r,t,y]<>99999 && ResidualCapacity[r,t,y]<>0}: TotalAnnualMaxCapacity[r,t,y]>= ResidualCapacity[r,t,y] + TotalAnnualMinCapacityInvestment[r,t,y];
 #
 #####  'Minimum Annual activity' check   #####
 printf "Checking Annual production by technology bounds for r in REGION, t in TECHNOLOGY, y in YEAR \n";
 #
-check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalAnnualMaxCapacity[r,t,y]<>0 && TotalAnnualMaxCapacity[r,t,y] <> -1 && TotalTechnologyAnnualActivityLowerLimit[r,t,y]<>0 && AvailabilityFactor[r,t,y]<>0 && CapacityToActivityUnit[r,t]<>0}: sum{l in TIMESLICE: CapacityFactor[r,t,l,y]<>0 && YearSplit[l,y]<>0}(CapacityFactor[r,t,l,y]*YearSplit[l,y])*TotalAnnualMaxCapacity[r,t,y]* AvailabilityFactor[r,t,y]*CapacityToActivityUnit[r,t] >= TotalTechnologyAnnualActivityLowerLimit[r,t,y];
+check{r in REGION, t in TECHNOLOGY, y in YEAR:TotalAnnualMaxCapacity[r,t,y]<>0 && TotalAnnualMaxCapacity[r,t,y] <> 99999 && TotalTechnologyAnnualActivityLowerLimit[r,t,y]<>0 && AvailabilityFactor[r,t,y]<>0 && CapacityToActivityUnit[r,t]<>0}: sum{l in TIMESLICE: CapacityFactor[r,t,l,y]<>0 && YearSplit[l,y]<>0}(CapacityFactor[r,t,l,y]*YearSplit[l,y])*TotalAnnualMaxCapacity[r,t,y]* AvailabilityFactor[r,t,y]*CapacityToActivityUnit[r,t] >= TotalTechnologyAnnualActivityLowerLimit[r,t,y];
 #
 #####    'Time Slice' check     #####
 printf "Checking TimeSlices/YearSplits for y in YEAR \n";
@@ -194,1047 +195,584 @@ printf "Checking Model period activity bounds for r in REGION, t in TECHNOLOGY \
 #
 check{r in REGION, t in TECHNOLOGY: TotalTechnologyModelPeriodActivityLowerLimit[r,t]<>0}:TotalTechnologyModelPeriodActivityLowerLimit[r,t] >= sum{y in YEAR: TotalTechnologyAnnualActivityLowerLimit[r,t,y] <>0}TotalTechnologyAnnualActivityLowerLimit[r,t,y];
 
-
+#
+#
 ######################
 #   Model Variables  #
 ######################
-
+#
 ########			Demands 					#############
-
-var RateOfDemand{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var Demand{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-
+#
+var RateOfDemand{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}>= 0;
+var Demand{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}>= 0;
+#
 ########     		Storage                 		#############
-
-var RateOfStorageCharge{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}; # No explicit domain in Pyomo, implies free
-var RateOfStorageDischarge{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}; # No explicit domain
-var NetChargeWithinYear{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}; # No explicit domain
-var NetChargeWithinDay{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}; # No explicit domain
-var StorageLevelYearStart{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var StorageLevelYearFinish{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var StorageLevelSeasonStart{r in REGION, s in STORAGE, ls in SEASON, y in YEAR} >= 0; # domain=NonNegativeReals
-var StorageLevelDayTypeStart{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR} >= 0; # domain=NonNegativeReals
-var StorageLevelDayTypeFinish{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR} >= 0; # domain=NonNegativeReals
-var StorageLowerLimit{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var StorageUpperLimit{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var AccumulatedNewStorageCapacity{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var NewStorageCapacity{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var CapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var DiscountedCapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var SalvageValueStorage{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var DiscountedSalvageValueStorage{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-var TotalDiscountedStorageCost{r in REGION, s in STORAGE, y in YEAR} >= 0; # domain=NonNegativeReals
-
+#
+var RateOfStorageCharge{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR} >= 0; # NonNegativeReals equivalent
+var RateOfStorageDischarge{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR} >= 0; # NonNegativeReals equivalent  
+var NetChargeWithinYear{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}; # Reals equivalent (can be negative)
+var NetChargeWithinDay{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}; # Reals equivalent (can be negative)
+var StorageLevelYearStart{r in REGION, s in STORAGE, y in YEAR} >=0;
+var StorageLevelYearFinish{r in REGION, s in STORAGE, y in YEAR} >=0;
+var StorageLevelSeasonStart{r in REGION, s in STORAGE, ls in SEASON, y in YEAR} >=0;
+var StorageLevelDayTypeStart{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR} >=0;
+var StorageLevelDayTypeFinish{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR} >=0;
+var StorageLowerLimit{r in REGION, s in STORAGE, y in YEAR}>=0;
+var StorageUpperLimit{r in REGION, s in STORAGE, y in YEAR} >=0;
+																																																																																																																																																	  
+var AccumulatedNewStorageCapacity{r in REGION, s in STORAGE, y in YEAR} >=0;
+var NewStorageCapacity{r in REGION, s in STORAGE, y in YEAR} >=0;
+																																																																																																																																																																												  
+var CapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR} >=0;
+var DiscountedCapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR} >=0;
+var SalvageValueStorage{r in REGION, s in STORAGE, y in YEAR} >=0;
+var DiscountedSalvageValueStorage{r in REGION, s in STORAGE, y in YEAR} >=0;
+var TotalDiscountedStorageCost{r in REGION, s in STORAGE, y in YEAR} >=0;
+#
 #########		    Capacity Variables 			#############
-
-var NumberOfNewTechnologyUnits{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0, integer; # domain=NonNegativeIntegers
-var NewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var AccumulatedNewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var TotalCapacityAnnual{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-
+#
+var NumberOfNewTechnologyUnits{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0,integer;
+var NewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0;
+var AccumulatedNewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0;
+var TotalCapacityAnnual{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+#
 #########		    Activity Variables 			#############
-
-var RateOfActivity{r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfTotalActivity{r in REGION, t in TECHNOLOGY, l in TIMESLICE, y in YEAR} >= 0; # domain=NonNegativeReals
-var TotalTechnologyAnnualActivity{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var TotalAnnualTechnologyActivityByMode{r in REGION, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfProductionByTechnologyByMode{r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfProductionByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var ProductionByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var ProductionByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfProduction{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var Production{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfUseByTechnologyByMode{r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfUseByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var UseByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var RateOfUse{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var UseByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var Use{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var Trade{r in REGION, rr in REGION, l in TIMESLICE, f in FUEL, y in YEAR}; # No explicit domain (can be negative)
-var TradeAnnual{r in REGION, rr in REGION, f in FUEL, y in YEAR}; # No explicit domain
-
-var ProductionAnnual{r in REGION, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-var UseAnnual{r in REGION, f in FUEL, y in YEAR} >= 0; # domain=NonNegativeReals
-
+#
+var RateOfActivity{r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR} >= 0;
+var RateOfTotalActivity{r in REGION, t in TECHNOLOGY, l in TIMESLICE, y in YEAR} >= 0;
+var TotalTechnologyAnnualActivity{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0;
+var TotalAnnualTechnologyActivityByMode{r in REGION, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR}>=0;
+var TotalTechnologyModelPeriodActivity{r in REGION, t in TECHNOLOGY};
+var RateOfProductionByTechnologyByMode{r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, f in FUEL, y in YEAR}>= 0;
+var RateOfProductionByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR}>= 0;
+var ProductionByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR}>= 0;
+var ProductionByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR}>= 0;
+var RateOfProduction{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0;
+var Production{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR} >= 0;
+var RateOfUseByTechnologyByMode{r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, f in FUEL, y in YEAR}>= 0;
+var RateOfUseByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR} >= 0;
+var UseByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR}>= 0;
+var RateOfUse{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}>= 0;
+var UseByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR}>= 0;
+var Use{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}>= 0;
+var Trade{r in REGION, rr in REGION, l in TIMESLICE, f in FUEL, y in YEAR};
+var TradeAnnual{r in REGION, rr in REGION, f in FUEL, y in YEAR};
+#
+var ProductionAnnual{r in REGION, f in FUEL, y in YEAR}>= 0;
+var UseAnnual{r in REGION, f in FUEL, y in YEAR}>= 0;
+	   
+ 
+	   
+																																																																 
+																																																																																																																																				  
+																																																																																																	
+																																																																																																																																																																			 
+																																																																																																		 
+																																																																																																																																																																																																																			  
+																																																																																																																														  
+																																																																																																																																										 
+																																																																																																																																										   
+																																																																																																													   
+																																																																																								
+																																																																																																																																																																										 
+																																																																																																																																										 
+																																																																																																	   
+#
 #########		    Costing Variables 			#############
-
-var CapitalInvestment{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var DiscountedCapitalInvestment{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var SalvageValue{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var DiscountedSalvageValue{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var OperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var DiscountedOperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var AnnualVariableOperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var AnnualFixedOperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-# VariableOperatingCost(r,t,l,y) from Pyomo seems to be an intermediate calc, not a primary variable in osemosys.txt structure.
-# It's used to define AnnualVariableOperatingCost.
-var TotalDiscountedCostByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var TotalDiscountedCost{r in REGION, y in YEAR} >= 0; # domain=NonNegativeReals
-var ModelPeriodCostByRegion{r in REGION} >= 0; # domain=NonNegativeReals
-
+#
+var CapitalInvestment{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+var DiscountedCapitalInvestment{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+#
+var SalvageValue{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+var DiscountedSalvageValue{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+var OperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+ 
+																																																																										
+																																																																																																		   
+var DiscountedOperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+																																																																																																					  
+																																																																																																													   
+#
+var AnnualVariableOperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+var AnnualFixedOperatingCost{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+#
+var TotalDiscountedCostByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}>= 0;
+var TotalDiscountedCost{r in REGION, y in YEAR}>= 0;
+#
+var ModelPeriodCostByRegion{r in REGION} >= 0;
+#
 #########			Reserve Margin				#############
-
-var TotalCapacityInReserveMargin{r in REGION, y in YEAR} >= 0; # domain=NonNegativeReals
-var DemandNeedingReserveMargin{r in REGION, l in TIMESLICE, y in YEAR} >= 0; # domain=NonNegativeReals
-
+ 
+#
+var TotalCapacityInReserveMargin{r in REGION, y in YEAR}>= 0;
+var DemandNeedingReserveMargin{r in REGION,l in TIMESLICE, y in YEAR}>= 0;
+#
 #########			RE Gen Target				#############
-
-var TotalREProductionAnnual{r in REGION, y in YEAR}; # No explicit domain
-var RETotalProductionOfTargetFuelAnnual{r in REGION, y in YEAR}; # No explicit domain
-var TotalTechnologyModelPeriodActivity{r in REGION, t in TECHNOLOGY}; # No explicit domain (Pyomo version)
-
+#
+var TotalREProductionAnnual{r in REGION, y in YEAR};
+var RETotalProductionOfTargetFuelAnnual{r in REGION, y in YEAR};
+#
 #########			Emissions					#############
-
-var AnnualTechnologyEmissionByMode{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR} >= 0; # domain=NonNegativeReals
-var AnnualTechnologyEmission{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR} >= 0; # domain=NonNegativeReals
-var AnnualTechnologyEmissionPenaltyByEmission{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR} >= 0; # domain=NonNegativeReals
-var AnnualTechnologyEmissionsPenalty{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var DiscountedTechnologyEmissionsPenalty{r in REGION, t in TECHNOLOGY, y in YEAR} >= 0; # domain=NonNegativeReals
-var AnnualEmissions{r in REGION, e in EMISSION, y in YEAR} >= 0; # domain=NonNegativeReals
-var ModelPeriodEmissions{r in REGION, e in EMISSION} >= 0; # domain=NonNegativeReals
-
+#
+var AnnualTechnologyEmissionByMode{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR}>=0;
+var AnnualTechnologyEmission{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR}>=0;
+var AnnualTechnologyEmissionPenaltyByEmission{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR}>=0;
+var AnnualTechnologyEmissionsPenalty{r in REGION, t in TECHNOLOGY, y in YEAR}>=0;
+var DiscountedTechnologyEmissionsPenalty{r in REGION, t in TECHNOLOGY, y in YEAR}>=0;
+var AnnualEmissions{r in REGION, e in EMISSION, y in YEAR}>=0;
+var ModelPeriodEmissions{r in REGION, e in EMISSION}>=0;
+	  
+																																																																																																																														   
+	   
+																																																																															 
+																																																																																																																																																																																		 
+#
+																																																																																																																																																																		   
+																																																																																																																									
+																																																																																																		   
 ######################
 # Objective Function #
 ######################
-
+#
 minimize cost: sum{r in REGION} ModelPeriodCostByRegion[r];
-# Pyomo: sum(model.ModelPeriodCostByRegion[r] for r in model.REGION)
-# ModelPeriodCostByRegion is defined by Acc4_ModelPeriodCostByRegion_rule as sum(model.TotalDiscountedCost[r, y] for y in model.YEAR)
-# So effectively: minimize cost: sum{r in REGION, y in YEAR} TotalDiscountedCost[r,y]; (This is what osemosys.txt uses)
-# I will stick to the osemosys.txt formulation for directness:
-# minimize cost: sum{r in REGION, y in YEAR} TotalDiscountedCost[r,y];
-# On second thought, the Pyomo definition is:
-# model.OBJ = Objective(rule=ObjectiveFunction_rule, sense=minimize)
-# def ObjectiveFunction_rule(model): return sum(model.ModelPeriodCostByRegion[r] for r in model.REGION)
-# And ModelPeriodCostByRegion_rule(model, r): model.ModelPeriodCostByRegion[r] == sum(model.TotalDiscountedCost[r, y] for y in model.YEAR)
-# This implies ModelPeriodCostByRegion is a variable.
-# So, sum{r in REGION} ModelPeriodCostByRegion[r] is correct if ModelPeriodCostByRegion is properly constrained.
-# osemosys.txt has: minimize cost: sum{r in REGION, y in YEAR} TotalDiscountedCost[r,y];
-# And then: s.t. Acc4_ModelPeriodCostByRegion{r in REGION}: sum{y in YEAR}TotalDiscountedCost[r,y] = ModelPeriodCostByRegion[r];
-# This makes them equivalent. I will use the osemosys.txt direct objective for simplicity if it correctly reflects the Pyomo intent.
-# The pyomo model defines ModelPeriodCostByRegion as a Var and then defines it with a constraint.
-# Then the objective is sum(ModelPeriodCostByRegion[r] ...).
-# The osemosys.txt file defines ModelPeriodCostByRegion as a Var, defines it with a constraint, AND has objective as sum over TotalDiscountedCost[r,y].
-# This is fine. I'll use the osemosys.txt style:
-# minimize cost: sum{r in REGION, y in YEAR} TotalDiscountedCost[r,y];
-# And ensure the constraint Acc4_ModelPeriodCostByRegion is included.
 
-#####################
-# Constraints       #
-#####################
+# =====================
+# RESTRICCIONES
+# =====================
 
-# Using names from osemosys.py where possible, logic from osemosys.py, syntax from osemosys.txt
+# Demanda especificada
+s.t. EQ_SpecifiedDemand{r in REGION, f in FUEL, l in TIMESLICE, y in YEAR: SpecifiedAnnualDemand[r,f,y] > 0}:
+    SpecifiedAnnualDemand[r,f,y] * SpecifiedDemandProfile[r,f,l,y] / YearSplit[l,y] = RateOfDemand[r,l,f,y];
 
-# SpecifiedDemand_rule -> EQ_SpecifiedDemand
-s.t. EQ_SpecifiedDemand{r in REGION, f in FUEL, l in TIMESLICE, y in YEAR: SpecifiedAnnualDemand[r,f,y] <> 0 and YearSplit[l,y] <> 0}:
-    model.SpecifiedAnnualDemand[r, f, y] * model.SpecifiedDemandProfile[r, f, l, y] / model.YearSplit[l, y]
-    =
-    model.RateOfDemand[r, l, f, y];
-# osemosys.txt: SpecifiedAnnualDemand[r,f,y] * SpecifiedDemandProfile[r,f,l,y] / YearSplit[l,y] = RateOfDemand[r,l,f,y];
-# My version: (Same, just removed model.)
-# SpecifiedAnnualDemand[r,f,y] * SpecifiedDemandProfile[r,f,l,y] / YearSplit[l,y] = RateOfDemand[r,l,f,y];
-# The YearSplit[l,y] <> 0 condition is important if YearSplit can be zero. Added.
-
-#########       	Capacity Adequacy A	     	#############
-
-# TotalNewCapacity_1_rule -> CAa1_TotalNewCapacity
+# Capacidad acumulada nueva
 s.t. CAa1_TotalNewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    AccumulatedNewCapacity[r,t,y]
-    =
-    sum{yy in YEAR: (y - yy < OperationalLife[r,t]) and (y - yy >= 0)} NewCapacity[r,t,yy];
+    AccumulatedNewCapacity[r,t,y] = sum{yy in YEAR: y-yy < OperationalLife[r,t] && y-yy >= 0} NewCapacity[r,t,yy];
 
-# TotalNewCapacity_2_rule -> CAa5_TotalNewCapacity (order changed to match osemosys.txt)
-s.t. CAa5_TotalNewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR: CapacityOfOneTechnologyUnit[r,t,y] <> 0}:
-    CapacityOfOneTechnologyUnit[r,t,y] * NumberOfNewTechnologyUnits[r,t,y]
-    =
-    NewCapacity[r,t,y];
-# Pyomo: if model.CapacityOfOneTechnologyUnit[r, t, y] != 0: return (...) else: return Constraint.Skip
-# MathProg: { ... : CapacityOfOneTechnologyUnit[r,t,y] <> 0}
-
-# TotalAnnualCapacity_rule -> CAa2_TotalAnnualCapacity
+# Capacidad total anual
 s.t. CAa2_TotalAnnualCapacity{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    AccumulatedNewCapacity[r,t,y] + ResidualCapacity[r,t,y]
-    =
-    TotalCapacityAnnual[r,t,y];
+    AccumulatedNewCapacity[r,t,y] + ResidualCapacity[r,t,y] = TotalCapacityAnnual[r,t,y];
 
-# TotalActivityOfEachTechnology_rule -> CAa3_TotalActivityOfEachTechnology
+# Actividad total de cada tecnología
 s.t. CAa3_TotalActivityOfEachTechnology{r in REGION, t in TECHNOLOGY, l in TIMESLICE, y in YEAR}:
-    sum{m in MODE_OF_OPERATION} RateOfActivity[r,l,t,m,y]
-    =
-    RateOfTotalActivity[r,t,l,y];
+    sum{m in MODE_OF_OPERATION} RateOfActivity[r,l,t,m,y] = RateOfTotalActivity[r,t,l,y];
 
-# ConstraintCapacity_rule -> CAa4_Constraint_Capacity
+# Restricción de capacidad
 s.t. CAa4_Constraint_Capacity{r in REGION, l in TIMESLICE, t in TECHNOLOGY, y in YEAR}:
-    RateOfTotalActivity[r,t,l,y]
-    <=
-    TotalCapacityAnnual[r,t,y] * CapacityFactor[r,t,l,y] * CapacityToActivityUnit[r,t];
+    RateOfTotalActivity[r,t,l,y] <= TotalCapacityAnnual[r,t,y] * CapacityFactor[r,t,l,y] * CapacityToActivityUnit[r,t];
 
-#########       	Capacity Adequacy B		 	#############
+# Capacidad nueva en unidades discretas
+s.t. CAa5_TotalNewCapacity{r in REGION, t in TECHNOLOGY, y in YEAR: CapacityOfOneTechnologyUnit[r,t,y] <> 0}:
+    CapacityOfOneTechnologyUnit[r,t,y] * NumberOfNewTechnologyUnits[r,t,y] = NewCapacity[r,t,y];
 
-# PlannedMaintenance_rule -> CAb1_PlannedMaintenance
-s.t. CAb1_PlannedMaintenance{r in REGION, t in TECHNOLOGY, y in YEAR: AvailabilityFactor[r,t,y] < 1}:
-    sum{l in TIMESLICE} RateOfTotalActivity[r,t,l,y] * YearSplit[l,y]
-    <=
-    sum{l in TIMESLICE} (TotalCapacityAnnual[r,t,y] * CapacityFactor[r,t,l,y] * YearSplit[l,y])
-    * AvailabilityFactor[r,t,y] * CapacityToActivityUnit[r,t];
-# Pyomo: No explicit condition for AvailabilityFactor < 1 in the rule itself, but osemosys.txt has it. It's a common optimization.
+# Mantenimiento planificado
+s.t. CAb1_PlannedMaintenance{r in REGION, t in TECHNOLOGY, y in YEAR}:
+    sum{l in TIMESLICE} RateOfTotalActivity[r,t,l,y] * YearSplit[l,y] <= sum{l in TIMESLICE} (TotalCapacityAnnual[r,t,y] * CapacityFactor[r,t,l,y] * YearSplit[l,y]) * AvailabilityFactor[r,t,y] * CapacityToActivityUnit[r,t];
 
+#
 #########	        Energy Balance A    	 	#############
+#
+s.t. EBa1_RateOfFuelProduction1{
+	r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
+	OutputActivityRatio[r,t,f,m,y] <> 0}:
+	RateOfActivity[r,l,t,m,y] * OutputActivityRatio[r,t,f,m,y]
+	=
+	RateOfProductionByTechnologyByMode[r,l,t,m,f,y];
 
-# RateOfFuelProduction1_rule -> EBa1_RateOfFuelProduction1
-s.t. EBa1_RateOfFuelProduction1{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR: OutputActivityRatio[r,t,f,m,y] <> 0}:
-    RateOfProductionByTechnologyByMode[r,l,t,m,f,y]
-    =
-    RateOfActivity[r,l,t,m,y] * OutputActivityRatio[r,t,f,m,y];
-# Pyomo: if model.OutputActivityRatio[r,t,f,m,y] != 0: return X == Y else: return X == 0
-# MathProg: { ... : OutputActivityRatio[r,t,f,m,y] <> 0}: X = Y;
-# And if OutputActivityRatio is 0, X should be 0. This is implicitly handled if RateOfProductionByTechnologyByMode defaults to 0 or is not used.
-# osemosys.txt is: RateOfActivity[r,l,t,m,y] * OutputActivityRatio[r,t,f,m,y] = RateOfProductionByTechnologyByMode[r,l,t,m,f,y];
-# This is fine. The X==0 part from Pyomo needs to be ensured if OAR is 0.
-# If OutputActivityRatio[r,t,f,m,y] = 0, then RateOfProductionByTechnologyByMode should be 0.
-# The constraint EBa1_RateOfFuelProduction1 as written in osemosys.txt might force RateOfActivity to 0 if LHS is 0 and OAR is 0.
-# The pyomo formulation is safer:
-# if OAR != 0: VarProd = VarAct * OAR
-# else: VarProd = 0
-# The osemosys.txt formulation: {OAR !=0}: VarAct * OAR = VarProd
-# This implies if OAR=0, the constraint is skipped. We need another constraint for OAR=0.
-# s.t. EBa1_RateOfFuelProduction1_zero{r REG, l TS, f FU, t TECH, m MO, y YR: OutputActivityRatio[r,t,f,m,y] = 0}:
-# RateOfProductionByTechnologyByMode[r,l,t,m,f,y] = 0;
-# This is how it should be. osemosys.py has this. osemosys.txt does not explicitly state the _zero constraint,
-# but it might be implicitly handled by data or solver. For explicit translation:
-s.t. EBa1_RateOfFuelProduction1_Zero{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR: OutputActivityRatio[r,t,f,m,y] = 0}:
-    RateOfProductionByTechnologyByMode[r,l,t,m,f,y] = 0;
+s.t. EBa2_RateOfFuelProduction2{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, y in YEAR:
+								(sum{m in MODE_OF_OPERATION} OutputActivityRatio[r,t,f,m,y]) <> 0}:
+	sum{m in MODE_OF_OPERATION: OutputActivityRatio[r,t,f,m,y] <> 0} RateOfProductionByTechnologyByMode[r,l,t,m,f,y]
+	=
+	RateOfProductionByTechnology[r,l,t,f,y];
 
-# RateOfFuelProduction2_rule -> EBa2_RateOfFuelProduction2
-s.t. EBa2_RateOfFuelProduction2{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, y in YEAR}:
-    RateOfProductionByTechnology[r,l,t,f,y]
-    =
-    sum{m in MODE_OF_OPERATION} RateOfProductionByTechnologyByMode[r,l,t,m,f,y];
-# osemosys.txt adds a condition: (sum{m in MODE_OF_OPERATION} OutputActivityRatio[r,t,f,m,y]) <> 0
-# This seems like an optimization if all OARs for a tech/fuel are zero. Pyomo version is unconditional. I'll follow Pyomo.
+s.t. EBa3_RateOfFuelProduction3{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR:
+							    (sum{t in TECHNOLOGY, m in MODE_OF_OPERATION} OutputActivityRatio[r,t,f,m,y]) <> 0}:
+	sum{t in TECHNOLOGY} RateOfProductionByTechnology[r,l,t,f,y]
+	=
+	RateOfProduction[r,l,f,y];
 
-# RateOfFuelProduction3_rule -> EBa3_RateOfFuelProduction3
-s.t. EBa3_RateOfFuelProduction3{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}:
-    RateOfProduction[r,l,f,y]
-    =
-    sum{t in TECHNOLOGY} RateOfProductionByTechnology[r,l,t,f,y];
-# osemosys.txt adds condition: (sum{t in TECHNOLOGY, m in MODE_OF_OPERATION} OutputActivityRatio[r,t,f,m,y]) <> 0. Following Pyomo.
+s.t. EBa4_RateOfFuelUse1{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR:
+						 InputActivityRatio[r,t,f,m,y] <> 0}:
+	RateOfActivity[r,l,t,m,y] * InputActivityRatio[r,t,f,m,y]
+	=
+	RateOfUseByTechnologyByMode[r,l,t,m,f,y];
 
-# RateOfFuelUse1_rule -> EBa4_RateOfFuelUse1
-s.t. EBa4_RateOfFuelUse1{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR: InputActivityRatio[r,t,f,m,y] <> 0}:
-    RateOfActivity[r,l,t,m,y] * InputActivityRatio[r,t,f,m,y]
-    =
-    RateOfUseByTechnologyByMode[r,l,t,m,f,y];
-# Pyomo is unconditional, but results in X*0 = Y, so Y=0 if IAR is 0.
-# osemosys.txt has the condition. If IAR = 0, then RateOfUseByTechnologyByMode should be 0.
-# This needs the equivalent _Zero constraint like EBa1.
-s.t. EBa4_RateOfFuelUse1_Zero{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR: InputActivityRatio[r,t,f,m,y] = 0}:
-    RateOfUseByTechnologyByMode[r,l,t,m,f,y] = 0;
+s.t. EBa5_RateOfFuelUse2{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, y in YEAR:
+						 sum{m in MODE_OF_OPERATION} InputActivityRatio[r,t,f,m,y] <> 0}:
+	sum{m in MODE_OF_OPERATION: InputActivityRatio[r,t,f,m,y] <> 0}
+	RateOfUseByTechnologyByMode[r,l,t,m,f,y]
+	=
+	RateOfUseByTechnology[r,l,t,f,y];
 
+s.t. EBa6_RateOfFuelUse3{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR:
+						 sum{t in TECHNOLOGY, m in MODE_OF_OPERATION} InputActivityRatio[r,t,f,m,y] <> 0}:
+	sum{t in TECHNOLOGY} RateOfUseByTechnology[r,l,t,f,y]
+	=
+	RateOfUse[r,l,f,y];
 
-# RateOfFuelUse2_rule -> EBa5_RateOfFuelUse2
-s.t. EBa5_RateOfFuelUse2{r in REGION, l in TIMESLICE, f in FUEL, t in TECHNOLOGY, y in YEAR}:
-    RateOfUseByTechnology[r,l,t,f,y]
-    =
-    sum{m in MODE_OF_OPERATION} RateOfUseByTechnologyByMode[r,l,t,m,f,y];
-# osemosys.txt adds condition: sum{m in MODE_OF_OPERATION} InputActivityRatio[r,t,f,m,y] <> 0. Following Pyomo.
+s.t. EBa7_EnergyBalanceEachTS1{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR:
+							   (sum{t in TECHNOLOGY, m in MODE_OF_OPERATION} OutputActivityRatio[r,t,f,m,y]) <> 0}:
+	RateOfProduction[r,l,f,y] * YearSplit[l,y]
+	=
+	Production[r,l,f,y];
 
-# RateOfFuelUse3_rule -> EBa6_RateOfFuelUse3
-s.t. EBa6_RateOfFuelUse3{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}:
-    sum{t in TECHNOLOGY} RateOfUseByTechnology[r,l,t,f,y]
-    =
-    RateOfUse[r,l,f,y];
-# osemosys.txt adds condition: sum{t in TECHNOLOGY, m in MODE_OF_OPERATION} InputActivityRatio[r,t,f,m,y] <> 0. Following Pyomo.
+s.t. EBa8_EnergyBalanceEachTS2{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR:
+							   (sum{t in TECHNOLOGY, m in MODE_OF_OPERATION} InputActivityRatio[r,t,f,m,y]) <> 0}:
+	RateOfUse[r,l,f,y] * YearSplit[l,y]
+	=
+	Use[r,l,f,y];
 
-# EnergyBalanceEachTS1_rule -> EBa7_EnergyBalanceEachTS1
-s.t. EBa7_EnergyBalanceEachTS1{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}:
-    RateOfProduction[r,l,f,y] * YearSplit[l,y]
-    =
-    Production[r,l,f,y];
-# osemosys.txt adds condition. Following Pyomo.
+s.t. EBa9_EnergyBalanceEachTS3{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR:
+							   SpecifiedAnnualDemand[r,f,y] > 0}:
+	RateOfDemand[r,l,f,y] * YearSplit[l,y]
+	=
+	Demand[r,l,f,y];
 
-# EnergyBalanceEachTS2_rule -> EBa8_EnergyBalanceEachTS2
-s.t. EBa8_EnergyBalanceEachTS2{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}:
-    RateOfUse[r,l,f,y] * YearSplit[l,y]
-    =
-    Use[r,l,f,y];
-# osemosys.txt adds condition. Following Pyomo.
+s.t. EBa10_EnergyBalanceEachTS4{r in REGION, rr in REGION, l in TIMESLICE, f in FUEL, y in YEAR:
+								TradeRoute[r,rr,f,y] <> 0}:
+	Trade[r,rr,l,f,y]
+	=
+	-Trade[rr,r,l,f,y];
 
-# EnergyBalanceEachTS3_rule -> EBa9_EnergyBalanceEachTS3
-s.t. EBa9_EnergyBalanceEachTS3{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}:
-    RateOfDemand[r,l,f,y] * YearSplit[l,y]
-    =
-    Demand[r,l,f,y];
-# osemosys.txt adds condition. Following Pyomo.
-
-# EnergyBalanceEachTS4_rule -> EBa10_EnergyBalanceEachTS4
-s.t. EBa10_EnergyBalanceEachTS4{r in REGION, rr in REGION, l in TIMESLICE, f in FUEL, y in YEAR: TradeRoute[r,rr,f,y] <> 0 and r <> rr}:
-    Trade[r,rr,l,f,y] + Trade[rr,r,l,f,y]
-    =
-    0;
-# Added r <> rr to avoid Trade[r,r,l,f,y] + Trade[r,r,l,f,y] = 0, which implies Trade[r,r,l,f,y]=0.
-# The TradeRoute parameter should ideally not have r=rr.
-# osemosys.txt condition is just TradeRoute. The r <> rr might be implicit in data.
-
-# EnergyBalanceEachTS5_rule -> EBa11_EnergyBalanceEachTS5
 s.t. EBa11_EnergyBalanceEachTS5{r in REGION, l in TIMESLICE, f in FUEL, y in YEAR}:
-    Production[r,l,f,y]
-    >=
-    Demand[r,l,f,y] + Use[r,l,f,y] + sum{rr in REGION: r <> rr} Trade[r,rr,l,f,y] * TradeRoute[r,rr,f,y];
-# Pyomo: sum(model.Trade[r, rr, l, f, y] * model.TradeRoute[r, rr, f, y] for rr in model.REGION)
-# If TradeRoute[r,r,f,y] is defined (e.g. as 0 or 1), it could affect sum.
-# osemosys.txt: sum{rr in REGION} Trade[r,rr,l,f,y] * TradeRoute[r,rr,f,y]
-# Assuming TradeRoute[r,r,f,y] is 0 or not defined for r=rr. Added r <> rr for safety.
+	Production[r,l,f,y]
+	>=
+	Demand[r,l,f,y] + Use[r,l,f,y] + sum{rr in REGION} Trade[r,rr,l,f,y] * TradeRoute[r,rr,f,y];
 
+#
 #########        	Energy Balance B		 	#############
-
-# EnergyBalanceEachYear1_rule -> EBb1_EnergyBalanceEachYear1
+#
 s.t. EBb1_EnergyBalanceEachYear1{r in REGION, f in FUEL, y in YEAR}:
-    sum{l in TIMESLICE} Production[r,l,f,y]
-    =
-    ProductionAnnual[r,f,y];
+	sum{l in TIMESLICE} Production[r,l,f,y]
+	=
+	ProductionAnnual[r,f,y];
 
-# EnergyBalanceEachYear2_rule -> EBb2_EnergyBalanceEachYear2
 s.t. EBb2_EnergyBalanceEachYear2{r in REGION, f in FUEL, y in YEAR}:
-    sum{l in TIMESLICE} Use[r,l,f,y]
-    =
-    UseAnnual[r,f,y];
+	sum{l in TIMESLICE} Use[r,l,f,y]
+	=
+	UseAnnual[r,f,y];
 
-# EnergyBalanceEachYear3_rule -> EBb3_EnergyBalanceEachYear3
-s.t. EBb3_EnergyBalanceEachYear3{r in REGION, rr in REGION, f in FUEL, y in YEAR: r <> rr}:
-    sum{l in TIMESLICE} Trade[r,rr,l,f,y]
-    =
-    TradeAnnual[r,rr,f,y];
-# Added r <> rr.
+s.t. EBb3_EnergyBalanceEachYear3{r in REGION, rr in REGION, f in FUEL, y in YEAR}:
+	sum{l in TIMESLICE} Trade[r,rr,l,f,y]
+	=
+	TradeAnnual[r,rr,f,y];
 
-# EnergyBalanceEachYear4_rule -> EBb4_EnergyBalanceEachYear4
 s.t. EBb4_EnergyBalanceEachYear4{r in REGION, f in FUEL, y in YEAR}:
-    ProductionAnnual[r,f,y]
-    >=
-    UseAnnual[r,f,y] + sum{rr in REGION: r <> rr} TradeAnnual[r,rr,f,y] * TradeRoute[r,rr,f,y] + AccumulatedAnnualDemand[r,f,y];
-# Added r <> rr.
+	ProductionAnnual[r,f,y]
+	>=
+	UseAnnual[r,f,y] + sum{rr in REGION} TradeAnnual[r,rr,f,y] * TradeRoute[r,rr,f,y] + AccumulatedAnnualDemand[r,f,y];
 
+#
 #########        	Accounting Technology Production/Use	#############
-
-# FuelProductionByTechnology_rule -> Acc1_FuelProductionByTechnology
+#
 s.t. Acc1_FuelProductionByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR}:
-    RateOfProductionByTechnology[r,l,t,f,y] * YearSplit[l,y]
-    =
-    ProductionByTechnology[r,l,t,f,y];
+	RateOfProductionByTechnology[r,l,t,f,y] * YearSplit[l,y]
+	=
+	ProductionByTechnology[r,l,t,f,y];
 
-# FuelUseByTechnology_rule -> Acc2_FuelUseByTechnology
 s.t. Acc2_FuelUseByTechnology{r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR}:
-    RateOfUseByTechnology[r,l,t,f,y] * YearSplit[l,y]
-    =
-    UseByTechnology[r,l,t,f,y];
+	RateOfUseByTechnology[r,l,t,f,y] * YearSplit[l,y]
+	=
+	UseByTechnology[r,l,t,f,y];
 
-# AverageAnnualRateOfActivity_rule -> Acc3_AverageAnnualRateOfActivity
 s.t. Acc3_AverageAnnualRateOfActivity{r in REGION, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR}:
-    sum{l in TIMESLICE} RateOfActivity[r,l,t,m,y]*YearSplit[l,y]
-    =
-    TotalAnnualTechnologyActivityByMode[r,t,m,y];
+	sum{l in TIMESLICE} RateOfActivity[r,l,t,m,y]*YearSplit[l,y]
+	=
+	TotalAnnualTechnologyActivityByMode[r,t,m,y];
 
-# ModelPeriodCostByRegion_rule -> Acc4_ModelPeriodCostByRegion
 s.t. Acc4_ModelPeriodCostByRegion{r in REGION}:
-    sum{y in YEAR} TotalDiscountedCost[r,y]
-    =
-    ModelPeriodCostByRegion[r];
+	sum{y in YEAR}TotalDiscountedCost[r,y] = ModelPeriodCostByRegion[r];
 
-#########			Storage equations (Pyomo names them with _constraint) #############
-# osemosys.txt uses S1, S2 etc. I'll map Pyomo names to S style for consistency with osemosys.txt where logic is same.
-
-# RateOfStorageCharge_constraint -> S1_RateOfStorageCharge
-# Pyomo iterates t, m in constraint definition, osemosys.txt sums over them.
-# Pyomo: if model.TechnologyToStorage[r, t, s, m] > 0: return sum(...) == Var else: return Constraint.Skip
-# This is tricky. A single (r,s,ls,ld,lh,y) constraint in Pyomo is defined per (t,m) that satisfies the condition.
-# MathProg defines one constraint per (r,s,ls,ld,lh,y) and sums internally.
-# The Pyomo version seems to imply RateOfStorageCharge is indexed by t,m as well, but it's not.
-# RateOfStorageCharge{r REGION, s STORAGE, ls SEASON, ld DAYTYPE, lh DAILYTIMEBRACKET, y YEAR}
-# The osemosys.txt version is likely the correct interpretation for MathProg:
+#
+#########        	Storage Equations			#############
+#
 s.t. S1_RateOfStorageCharge{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    sum{t in TECHNOLOGY, m in MODE_OF_OPERATION, l in TIMESLICE: TechnologyToStorage[r,t,s,m] > 0 and Conversionls[l,ls]>0 and Conversionld[l,ld]>0 and Conversionlh[l,lh]>0}
-        (RateOfActivity[r,l,t,m,y] * TechnologyToStorage[r,t,s,m] * Conversionls[l,ls] * Conversionld[l,ld] * Conversionlh[l,lh])
-    =
-    RateOfStorageCharge[r,s,ls,ld,lh,y];
-# Added Conversion conditions to sum to match osemosys.txt logic for this variable.
+	sum{t in TECHNOLOGY, m in MODE_OF_OPERATION, l in TIMESLICE: TechnologyToStorage[r,t,s,m] > 0}
+	RateOfActivity[r,l,t,m,y] * TechnologyToStorage[r,t,s,m] * Conversionls[l,ls] * Conversionld[l,ld] * Conversionlh[l,lh]
+	=
+	RateOfStorageCharge[r,s,ls,ld,lh,y];
 
-# RateOfStorageDischarge_constraint -> S2_RateOfStorageDischarge
 s.t. S2_RateOfStorageDischarge{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    sum{t in TECHNOLOGY, m in MODE_OF_OPERATION, l in TIMESLICE: TechnologyFromStorage[r,t,s,m] > 0 and Conversionls[l,ls]>0 and Conversionld[l,ld]>0 and Conversionlh[l,lh]>0}
-        (RateOfActivity[r,l,t,m,y] * TechnologyFromStorage[r,t,s,m] * Conversionls[l,ls] * Conversionld[l,ld] * Conversionlh[l,lh])
-    =
-    RateOfStorageDischarge[r,s,ls,ld,lh,y];
+	sum{t in TECHNOLOGY, m in MODE_OF_OPERATION, l in TIMESLICE: TechnologyFromStorage[r,t,s,m] > 0}
+	RateOfActivity[r,l,t,m,y] * TechnologyFromStorage[r,t,s,m] * Conversionls[l,ls] * Conversionld[l,ld] * Conversionlh[l,lh]
+	=
+	RateOfStorageDischarge[r,s,ls,ld,lh,y];
 
-# NetChargeWithinYear_constraint -> S3_NetChargeWithinYear
 s.t. S3_NetChargeWithinYear{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    sum{l in TIMESLICE:Conversionls[l,ls]>0 and Conversionld[l,ld] > 0 and Conversionlh[l,lh] > 0}
-        ((RateOfStorageCharge[r,s,ls,ld,lh,y] - RateOfStorageDischarge[r,s,ls,ld,lh,y]) * YearSplit[l,y] *
-        Conversionls[l,ls] * Conversionld[l,ld] * Conversionlh[l,lh]) # This multiplication by Conversion seems redundant due to sum condition
-    =                                                                 # but osemosys.txt has it. It's harmless if they are 1.
-    NetChargeWithinYear[r,s,ls,ld,lh,y];
-# Pyomo: sum over l in TIMESLICE of ( (RateSC - RateSD) * YS[l,y] * Convls[l,ls] * Convld[l,ld] * Convlh[l,lh] ) == NetCWY
-# osemosys.txt: sum over l in TIMESLICE with conditions (Conv*YS*(Conv*Conv*Conv)) == NetCWY. This is the same.
+	sum{l in TIMESLICE:Conversionls[l,ls]>0 && Conversionld[l,ld] > 0 && Conversionlh[l,lh] > 0}
+	(RateOfStorageCharge[r,s,ls,ld,lh,y] - RateOfStorageDischarge[r,s,ls,ld,lh,y]) * YearSplit[l,y] *
+	Conversionls[l,ls] * Conversionld[l,ld] * Conversionlh[l,lh]
+	=
+	NetChargeWithinYear[r,s,ls,ld,lh,y];
 
-# NetChargeWithinDay_constraint -> S4_NetChargeWithinDay
 s.t. S4_NetChargeWithinDay{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    (RateOfStorageCharge[r,s,ls,ld,lh,y] - RateOfStorageDischarge[r,s,ls,ld,lh,y]) * DaySplit[lh,y]
-    =
-    NetChargeWithinDay[r,s,ls,ld,lh,y];
+	(RateOfStorageCharge[r,s,ls,ld,lh,y] - RateOfStorageDischarge[r,s,ls,ld,lh,y]) * DaySplit[lh,y]
+	=
+	NetChargeWithinDay[r,s,ls,ld,lh,y];
 
-# StorageLevelYearStart_constraint -> S5_and_S6_StorageLevelYearStart
 s.t. S5_and_S6_StorageLevelYearStart{r in REGION, s in STORAGE, y in YEAR}:
-    if y = (min{yy in YEAR} yy) then
-        StorageLevelStart[r,s]
-    else
-        StorageLevelYearStart[r,s,y-1] + sum{ls_ in SEASON, ld_ in DAYTYPE, lh_ in DAILYTIMEBRACKET} NetChargeWithinYear[r,s,ls_,ld_,lh_,y-1]
-    =
-    StorageLevelYearStart[r,s,y];
-# Note: index names ls_, ld_, lh_ to avoid conflict if any outer loops existed.
+	if y = min{yy in YEAR} min(yy)
+	then StorageLevelStart[r,s]
+	else StorageLevelYearStart[r,s,y-1] + sum{ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET}
+	NetChargeWithinYear[r,s,ls,ld,lh,y-1]
+	=
+	StorageLevelYearStart[r,s,y];
 
-# StorageLevelYearFinish_constraint -> S7_and_S8_StorageLevelYearFinish
 s.t. S7_and_S8_StorageLevelYearFinish{r in REGION, s in STORAGE, y in YEAR}:
-    if y < (max{yy in YEAR} yy) then
-        StorageLevelYearStart[r,s,y+1]
-    else # y == max(YEAR)
-        StorageLevelYearStart[r,s,y] + sum{ls_ in SEASON, ld_ in DAYTYPE, lh_ in DAILYTIMEBRACKET} NetChargeWithinYear[r,s,ls_,ld_,lh_,y] # Pyomo has y-1 here, osemosys.txt has y. This is a critical difference.
-                                                                                                                                # osemosys.txt: NetChargeWithinYear[r,s,ls,ld,lh,y]
-                                                                                                                                # osemosys.py:  NetChargeWithinYear[r,s,ls,ld,lh,y-1]
-                                                                                                                                # Given it's StorageLevelYearFINISH for year y, it should be based on activity IN year y. So osemosys.txt seems more logical.
-                                                                                                                                # Let's re-check pyomo:
-                                                                                                                                # else: (model.StorageLevelYearStart[r, s, y] + sum( model.NetChargeWithinYear[r,s,ls,ld,lh,y-1] ... ) == model.StorageLevelYearFinish[r,s,y])
-                                                                                                                                # This is very strange for y-1. It means finish level of current year depends on prior year's net charge.
-                                                                                                                                # osemosys.txt logic for S7_and_S8:
-                                                                                                                                # if y < max then SLYS[y+1] else SLYS[y] + sum(NCWY[y]) = SLYF[y]
-                                                                                                                                # This means for the last year, SLYF[y_max] = SLYS[y_max] + sum(NCWY[y_max]). This is standard.
-                                                                                                                                # I will follow osemosys.txt logic as it appears more standard for inventory balance.
-    =
-    StorageLevelYearFinish[r,s,y];
+	if y < max{yy in YEAR} max(yy)
+	then StorageLevelYearStart[r,s,y+1]
+	else StorageLevelYearStart[r,s,y] + sum{ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET}
+	NetChargeWithinYear[r,s,ls,ld,lh,y]
+	=
+	StorageLevelYearFinish[r,s,y];
 
-# StorageLevelSeasonStart_constraint -> S9_and_S10_StorageLevelSeasonStart
 s.t. S9_and_S10_StorageLevelSeasonStart{r in REGION, s in STORAGE, ls in SEASON, y in YEAR}:
-    if ls = (min{lsls in SEASON} lsls) then # Using min over elements
-        StorageLevelYearStart[r,s,y]
-    else
-        StorageLevelSeasonStart[r,s,ls-1,y] + sum{ld_ in DAYTYPE, lh_ in DAILYTIMEBRACKET} NetChargeWithinYear[r,s,ls-1,ld_,lh_,y]
-    =
-    StorageLevelSeasonStart[r,s,ls,y];
+	if ls = min{lsls in SEASON} min(lsls)
+	then StorageLevelYearStart[r,s,y]
+	else StorageLevelSeasonStart[r,s,ls-1,y] + sum{ld in DAYTYPE, lh in DAILYTIMEBRACKET}
+	NetChargeWithinYear[r,s,ls-1,ld,lh,y]
+	=
+	StorageLevelSeasonStart[r,s,ls,y];
 
-# StorageLevelDayTypeStart_constraint -> S11_and_S12_StorageLevelDayTypeStart
 s.t. S11_and_S12_StorageLevelDayTypeStart{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR}:
-    if ld = (min{ldld in DAYTYPE} ldld) then
-        StorageLevelSeasonStart[r,s,ls,y]
-    else
-        StorageLevelDayTypeStart[r,s,ls,ld-1,y] + sum{lh_ in DAILYTIMEBRACKET} NetChargeWithinDay[r,s,ls,ld-1,lh_,y] * DaysInDayType[ls,ld-1,y] # osemosys.txt includes DaysInDayType here. Pyomo does not.
-                                                                                                                                               # Pyomo: NetChargeWithinDay[r,s,ls,ld-1,lh,y]
-                                                                                                                                               # osemosys.txt: NetChargeWithinDay[r,s,ls,ld-1,lh,y] * DaysInDayType[ls,ld-1,y]
-                                                                                                                                               # This is a significant difference. DaysInDayType scales the daily net change to the whole daytype period.
-                                                                                                                                               # If NetChargeWithinDay is an average daily rate for that daytype, then multiplication is correct.
-                                                                                                                                               # Given DaySplit is used to get NetChargeWithinDay, it seems NetChargeWithinDay is for one specific day.
-                                                                                                                                               # So DaysInDayType multiplication is likely correct. Following osemosys.txt.
-    =
-    StorageLevelDayTypeStart[r,s,ls,ld,y];
+	if ld = min{ldld in DAYTYPE} min(ldld)
+	then StorageLevelSeasonStart[r,s,ls,y]
+	else StorageLevelDayTypeStart[r,s,ls,ld-1,y] + sum{lh in DAILYTIMEBRACKET}
+	NetChargeWithinDay[r,s,ls,ld-1,lh,y] * DaysInDayType[ls,ld-1,y]
+	=
+	StorageLevelDayTypeStart[r,s,ls,ld,y];
 
-# StorageLevelDayTypeFinish_constraint -> S13_and_S14_and_S15_StorageLevelDayTypeFinish
 s.t. S13_and_S14_and_S15_StorageLevelDayTypeFinish{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR}:
-    if ls = (max{lsls in SEASON} lsls) and ld = (max{ldld in DAYTYPE} ldld) then
-        StorageLevelYearFinish[r,s,y]
-    else if ld = (max{ldld in DAYTYPE} ldld) then # End of daytypes in a season, so it's start of next season
-        StorageLevelSeasonStart[r,s,ls+1,y]
-    else # Not end of daytypes, so it's start of next daytype, but from finish perspective
-        StorageLevelDayTypeStart[r,s,ls,ld+1,y] # Pyomo uses StorageLevelDayTypeFinish[r,s,ls,ld+1,y] - sum(...)
-                                                # osemosys.txt uses StorageLevelDayTypeFinish[r,s,ls,ld+1,y] - sum(...) * DaysInDayType
-                                                # This should be: SLDT_Finish[ld] = SLDT_Start[ld] + sum(NetChargeWithinDay[ld]) * DaysInDayType[ld]
-                                                # Or SLDT_Start[ld+1] = SLDT_Finish[ld]
-                                                # So SLDT_Finish[ld] = SLDT_Start[ld+1]
-                                                # The osemosys.txt version: SLDT_Finish[ld] = SLDT_Start[ld+1] (if we rearrange their equation for S13..S15 non-max ld part)
-                                                # osemosys.txt: else StorageLevelDayTypeFinish[r,s,ls,ld+1,y] - sum{lh} NetChargeWithinDay[r,s,ls,ld+1,lh,y] * DaysInDayType[ls,ld+1,y] = StorageLevelDayTypeFinish[r,s,ls,ld,y];
-                                                # This means SLDF[current] = SLDF[next] - NetCharge[next]*Duration[next]. This is a backward looking equation.
-                                                # Pyomo: model.StorageLevelDayTypeFinish[r,s,ls,ld+1,y] - sum(model.NetChargeWithinDay[r,s,ls,ld+1,lh,y] for lh in model.DAILYTIMEBRACKET) * model.DaysInDayType[ls,ld+1,y] == model.StorageLevelDayTypeFinish[r,s,ls,ld,y]
-                                                # Pyomo also has DaysInDayType in its formulation here, which I missed in earlier check.
-                                                # So both osemosys.txt and pyomo agree on DaysInDayType here. My earlier comment on S11/S12 was about pyomo NOT having it there.
-                                                # The structure is SLDF[ld] = SLDF[ld+1] - NetContribution[ld+1]. This implies SLDF[ld+1] = SLDF[ld] + NetContribution[ld+1].
-                                                # This is correct if NetContribution is only for the first day of daytype ld+1.
-                                                # Let's use the structure from osemosys.txt as it's given.
-        StorageLevelDayTypeStart[r,s,ls,ld,y] + sum{lh_ in DAILYTIMEBRACKET} NetChargeWithinDay[r,s,ls,ld,lh_,y] * DaysInDayType[ls,ld,y] # This should be the direct definition of Finish from Start for the current (ls,ld)
-                                                # StorageLevelDayTypeFinish = StorageLevelDayTypeStart + NetChargeForDayTypePeriod
-    =
-    StorageLevelDayTypeFinish[r,s,ls,ld,y];
-# Re-evaluating S13-S15 based on standard balance: Finish[current] = Start[current] + NetInflow[current_period]
-# And Start[next] = Finish[current]
-# For S13/S14/S15 (StorageLevelDayTypeFinish):
-# if ls=max and ld=max: SLDTF[ls,ld,y] = SLYF[y] (Boundary with year finish)
-# else if ld=max: SLDTF[ls,ld,y] = SLSS[ls+1,y] (Boundary with next season start)
-# else: SLDTF[ls,ld,y] = SLDTS[ls,ld+1,y] (Boundary with next daytype start)
-# This is the standard formulation used in many energy models.
-# The osemosys.txt and pyomo have a backward-looking definition.
-# Let's stick to their formulation:
-# s.t. S13_S14_S15_StorageLevelDayTypeFinish_Pyomo {r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR}:
-#    if ld == max(model.DAYTYPE):
-#        if ls == max(model.SEASON):
-#            return model.StorageLevelYearFinish[r, s, y] == model.StorageLevelDayTypeFinish[r, s, ls, ld, y]
-#        else:
-#            return model.StorageLevelSeasonStart[r, s, ls + 1, y] == model.StorageLevelDayTypeFinish[r, s, ls, ld, y]
-#    else: # This was the part I was checking
-#        return model.StorageLevelDayTypeFinish[r, s, ls, ld + 1, y] - sum(NetChargeWithinDay[r,s,ls,ld+1,lh,y] for lh in DAILYTIMEBRACKET) * DaysInDayType[ls,ld+1,y] == model.StorageLevelDayTypeFinish[r,s,ls,ld,y]
-# This is what I'll implement, as it's in Pyomo. The osemosys.txt is identical on this one.
-
-s.t. Pyomo_StorageLevelDayTypeFinish {r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR}:
-    if ld = (max{ldld_ in DAYTYPE} ldld_) then
-        if ls = (max{lsls_ in SEASON} lsls_) then
-            StorageLevelYearFinish[r,s,y]
-        else
-            StorageLevelSeasonStart[r,s,ls+1,y]
-    else
-        StorageLevelDayTypeStart[r,s,ls,ld+1,y] # Using start of next daytype as equivalent to finish of current
-    =
-    StorageLevelDayTypeFinish[r,s,ls,ld,y];
-#This is becoming too complex due to subtleties. I will use osemosys.txt formulation for S constraints directly.
-# My S13_S14_S15 above was trying to simplify, but it's better to be faithful to reference osemosys.txt for these complex ones.
-# Copied from osemosys.txt for S5 to S15:
-# s.t. S5_and_S6_StorageLevelYearStart{r in REGION, s in STORAGE, y in YEAR}: # Already did this one
-# s.t. S7_and_S8_StorageLevelYearFinish{r in REGION, s in STORAGE, y in YEAR}: # Already did this one, using osemosys.txt logic for y vs y-1
-# s.t. S9_and_S10_StorageLevelSeasonStart{r in REGION, s in STORAGE, ls in SEASON, y in YEAR}: # Already did this one
-# s.t. S11_and_S12_StorageLevelDayTypeStart{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR}: # Already did this one, using osemosys.txt logic for DaysInDayType
-# s.t. S13_and_S14_and_S15_StorageLevelDayTypeFinish from osemosys.txt:
-s.t. S13_S14_S15_StorageLevelDayTypeFinish_ref {r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, y in YEAR}:
-	if ls = (max{lsls_ in SEASON} lsls_) && ld = (max{ldld_ in DAYTYPE} ldld_) then
-        StorageLevelYearFinish[r,s,y]
-	else if ld = (max{ldld_ in DAYTYPE} ldld_) then
-        StorageLevelSeasonStart[r,s,ls+1,y]
-	else
-        StorageLevelDayTypeFinish[r,s,ls,ld+1,y] - sum{lh_ in DAILYTIMEBRACKET} NetChargeWithinDay[r,s,ls,ld+1,lh_,y] * DaysInDayType[ls,ld+1,y]
+	if ls = max{lsls in SEASON} max(lsls) && ld = max{ldld in DAYTYPE} max(ldld)
+	then StorageLevelYearFinish[r,s,y]
+	else if ld = max{ldld in DAYTYPE} max(ldld)
+	then StorageLevelSeasonStart[r,s,ls+1,y]
+	else StorageLevelDayTypeFinish[r,s,ls,ld+1,y] - sum{lh in DAILYTIMEBRACKET}
+	NetChargeWithinDay[r,s,ls,ld+1,lh,y] * DaysInDayType[ls,ld+1,y]
 	=
 	StorageLevelDayTypeFinish[r,s,ls,ld,y];
 
+#
+##########		Storage Constraints				#############
+#
+s.t. SC1_LowerLimit_BeginningOfDailyTimeBracketOfFirstInstanceOfDayTypeInFirstWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: 0 <= (StorageLevelDayTypeStart[r,s,ls,ld,y]+sum{lhlh in DAILYTIMEBRACKET:lh-lhlh>0} NetChargeWithinDay[r,s,ls,ld,lhlh,y])-StorageLowerLimit[r,s,y];
+s.t. SC1_UpperLimit_BeginningOfDailyTimeBracketOfFirstInstanceOfDayTypeInFirstWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: (StorageLevelDayTypeStart[r,s,ls,ld,y]+sum{lhlh in DAILYTIMEBRACKET:lh-lhlh>0} NetChargeWithinDay[r,s,ls,ld,lhlh,y])-StorageUpperLimit[r,s,y] <= 0;
+s.t. SC2_LowerLimit_EndOfDailyTimeBracketOfLastInstanceOfDayTypeInFirstWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: 0 <= if ld > min{ldld in DAYTYPE} min(ldld) then (StorageLevelDayTypeStart[r,s,ls,ld,y]-sum{lhlh in DAILYTIMEBRACKET:lh-lhlh<0} NetChargeWithinDay[r,s,ls,ld-1,lhlh,y])-StorageLowerLimit[r,s,y];
+s.t. SC2_UpperLimit_EndOfDailyTimeBracketOfLastInstanceOfDayTypeInFirstWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: if ld > min{ldld in DAYTYPE} min(ldld) then (StorageLevelDayTypeStart[r,s,ls,ld,y]-sum{lhlh in DAILYTIMEBRACKET:lh-lhlh<0} NetChargeWithinDay[r,s,ls,ld-1,lhlh,y])-StorageUpperLimit[r,s,y] <= 0;
+s.t. SC3_LowerLimit_EndOfDailyTimeBracketOfLastWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:  0 <= (StorageLevelDayTypeFinish[r,s,ls,ld,y] - sum{lhlh in DAILYTIMEBRACKET:lh-lhlh<0} NetChargeWithinDay[r,s,ls,ld,lhlh,y])-StorageLowerLimit[r,s,y];
+s.t. SC3_UpperLimit_EndOfDailyTimeBracketOfLastWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:  (StorageLevelDayTypeFinish[r,s,ls,ld,y] - sum{lhlh in DAILYTIMEBRACKET:lh-lhlh<0} NetChargeWithinDay[r,s,ls,ld,lhlh,y])-StorageUpperLimit[r,s,y] <= 0;
+s.t. SC4_LowerLimit_BeginningOfDailyTimeBracketOfFirstInstanceOfDayTypeInLastWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: 	0 <= if ld > min{ldld in DAYTYPE} min(ldld) then (StorageLevelDayTypeFinish[r,s,ls,ld-1,y]+sum{lhlh in DAILYTIMEBRACKET:lh-lhlh>0} NetChargeWithinDay[r,s,ls,ld,lhlh,y])-StorageLowerLimit[r,s,y];
+s.t. SC4_UpperLimit_BeginningOfDailyTimeBracketOfFirstInstanceOfDayTypeInLastWeekConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: if ld > min{ldld in DAYTYPE} min(ldld) then (StorageLevelDayTypeFinish[r,s,ls,ld-1,y]+sum{lhlh in DAILYTIMEBRACKET:lh-lhlh>0} NetChargeWithinDay[r,s,ls,ld,lhlh,y])-StorageUpperLimit[r,s,y] <= 0;
+s.t. SC5_MaxChargeConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: RateOfStorageCharge[r,s,ls,ld,lh,y] <= StorageMaxChargeRate[r,s];
+s.t. SC6_MaxDischargeConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}: RateOfStorageDischarge[r,s,ls,ld,lh,y] <= StorageMaxDischargeRate[r,s];
+#
+#########		Storage Investments				#############
+#
+s.t. SI1_StorageUpperLimit{r in REGION, s in STORAGE, y in YEAR}: AccumulatedNewStorageCapacity[r,s,y]+ResidualStorageCapacity[r,s,y] = StorageUpperLimit[r,s,y];
+s.t. SI2_StorageLowerLimit{r in REGION, s in STORAGE, y in YEAR}: MinStorageCharge[r,s,y]*StorageUpperLimit[r,s,y] = StorageLowerLimit[r,s,y];
+s.t. SI3_TotalNewStorage{r in REGION, s in STORAGE, y in YEAR}: sum{yy in YEAR: y-yy < OperationalLifeStorage[r,s] && y-yy>=0} NewStorageCapacity[r,s,yy]=AccumulatedNewStorageCapacity[r,s,y];
+s.t. SI4_UndiscountedCapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR}: CapitalCostStorage[r,s,y] * NewStorageCapacity[r,s,y] = CapitalInvestmentStorage[r,s,y];
+s.t. SI5_DiscountingCapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR}: CapitalInvestmentStorage[r,s,y] / ((1 + DiscountRate[r]) ^ (y - min{yy in YEAR} min(yy))) = DiscountedCapitalInvestmentStorage[r,s,y];
+s.t. SI6_SalvageValueStorageAtEndOfPeriod1{r in REGION, s in STORAGE, y in YEAR: (y+OperationalLifeStorage[r,s]-1) <= (max{yy in YEAR} max(yy))}: 0 = SalvageValueStorage[r,s,y];
+s.t. SI7_SalvageValueStorageAtEndOfPeriod2{r in REGION, s in STORAGE, y in YEAR: (DepreciationMethod[r]=1 && (y+OperationalLifeStorage[r,s]-1) > (max{yy in YEAR} max(yy)) && DiscountRate[r]=0) || (DepreciationMethod[r]=2 && (y+OperationalLifeStorage[r,s]-1) > (max{yy in YEAR} max(yy)))}: CapitalInvestmentStorage[r,s,y]*(1-(max{yy in YEAR} max(yy) - y+1)/OperationalLifeStorage[r,s]) = SalvageValueStorage[r,s,y];
+s.t. SI8_SalvageValueStorageAtEndOfPeriod3{r in REGION, s in STORAGE, y in YEAR: DepreciationMethod[r]=1 && (y+OperationalLifeStorage[r,s]-1) > (max{yy in YEAR} max(yy)) && DiscountRate[r]>0}: CapitalInvestmentStorage[r,s,y]*(1-(((1+DiscountRate[r])^(max{yy in YEAR} max(yy) - y+1)-1)/((1+DiscountRate[r])^OperationalLifeStorage[r,s]-1))) = SalvageValueStorage[r,s,y];
+																																																											
+																																																																																																																																																																																																																																																	  
+																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																					  
+																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																									
+s.t. SI9_SalvageValueStorageDiscountedToStartYear{r in REGION, s in STORAGE, y in YEAR}: SalvageValueStorage[r,s,y]/((1+DiscountRate[r])^(max{yy in YEAR} max(yy)-min{yy in YEAR} min(yy)+1)) = DiscountedSalvageValueStorage[r,s,y];
+s.t. SI10_TotalDiscountedCostByStorage{r in REGION, s in STORAGE, y in YEAR}: DiscountedCapitalInvestmentStorage[r,s,y]-DiscountedSalvageValueStorage[r,s,y] = TotalDiscountedStorageCost[r,s,y];
+#
+#########       	Capital Costs 		     	#############
+#
+s.t. CC1_UndiscountedCapitalInvestment{r in REGION, t in TECHNOLOGY, y in YEAR}: CapitalCost[r,t,y] * NewCapacity[r,t,y] = CapitalInvestment[r,t,y];
 
-#########			Storage constraints (Pyomo has 8, osemosys.txt has 6 SC lines but implies more with multiple conditions) #############
-# These are complex. Pyomo has:
-# LowerLimit_1TimeBracket1InstanceOfDayType1week_rule
-# LowerLimit_EndDaylyTimeBracketLastInstanceOfDayType1Week_rule
-# LowerLimit_EndDaylyTimeBracketLastInstanceOfDayTypeLastWeek_rule
-# LowerLimit_1TimeBracket1InstanceOfDayTypeLastweek_rule
-# And 4 similar for UpperLimit.
-# osemosys.txt has SC1 to SC4, each with a lower and upper limit constraint. This matches 8 constraints.
-# I will use the osemosys.txt structure SC1_Lower, SC1_Upper etc.
-
-s.t. SC1_LowerLimit_BOTFirstDayTypeFirstWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    StorageLevelDayTypeStart[r,s,ls,ld,y] + sum{lhlh in DAILYTIMEBRACKET: card(lhlh) < card(lh)} NetChargeWithinDay[r,s,ls,ld,lhlh,y]
-    >=
-    StorageLowerLimit[r,s,y];
-# Note: card(lhlh) < card(lh) is a way to sum over previous dailytimebrackets within the day. Pyomo: (lh - lhlh > 0)
-
-s.t. SC1_UpperLimit_BOTFirstDayTypeFirstWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    StorageLevelDayTypeStart[r,s,ls,ld,y] + sum{lhlh in DAILYTIMEBRACKET: card(lhlh) < card(lh)} NetChargeWithinDay[r,s,ls,ld,lhlh,y]
-    <=
-    StorageUpperLimit[r,s,y];
-
-# Pyomo: LowerLimit_EndDaylyTimeBracketLastInstanceOfDayType1Week_rule (SC2 in osemosys.txt)
-# if ld > min(model.DAYTYPE): ... StorageLevelDayTypeStart[r,s,ls,ld,y] - sum(NetChargeWithinDay[r,s,ls,ld-1,lhlh,y] for lhlh if lh-lhlh < 0) >= LowerLimit
-# This seems to relate current daytype start with previous daytype's end part.
-# osemosys.txt SC2: if ld > min then (StorageLevelDayTypeStart[r,s,ls,ld,y]-sum{lhlh:lh-lhlh<0} NetChargeWithinDay[r,s,ls,ld-1,lhlh,y])-StorageLowerLimit >=0
-# This is complex. The indices ld vs ld-1 and lh-lhlh<0. This means sum over future brackets of previous daytype.
-# This seems to be ensuring that the level at the END of the previous day type (ld-1) respects limits.
-# Let's use the exact formulation from osemosys.txt for SC2, SC3, SC4 due to their complexity.
-
-s.t. SC2_LowerLimit_EOTLastDayTypeFirstWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR: ld > (min{ldld_ in DAYTYPE} ldld_)}:
-    (StorageLevelDayTypeStart[r,s,ls,ld,y] - sum{lhlh in DAILYTIMEBRACKET: card(lhlh) > card(lh)} NetChargeWithinDay[r,s,ls,ld-1,lhlh,y]) # sum over lhlh > lh in previous day ld-1
-    >=
-    StorageLowerLimit[r,s,y];
-
-s.t. SC2_UpperLimit_EOTLastDayTypeFirstWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR: ld > (min{ldld_ in DAYTYPE} ldld_)}:
-    (StorageLevelDayTypeStart[r,s,ls,ld,y] - sum{lhlh in DAILYTIMEBRACKET: card(lhlh) > card(lh)} NetChargeWithinDay[r,s,ls,ld-1,lhlh,y])
-    <=
-    StorageUpperLimit[r,s,y];
-
-s.t. SC3_LowerLimit_EOTLastDayTypeLastWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    (StorageLevelDayTypeFinish[r,s,ls,ld,y] - sum{lhlh in DAILYTIMEBRACKET: card(lhlh) > card(lh)} NetChargeWithinDay[r,s,ls,ld,lhlh,y]) # sum over lhlh > lh in current day ld
-    >=
-    StorageLowerLimit[r,s,y];
-
-s.t. SC3_UpperLimit_EOTLastDayTypeLastWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    (StorageLevelDayTypeFinish[r,s,ls,ld,y] - sum{lhlh in DAILYTIMEBRACKET: card(lhlh) > card(lh)} NetChargeWithinDay[r,s,ls,ld,lhlh,y])
-    <=
-    StorageUpperLimit[r,s,y];
-
-s.t. SC4_LowerLimit_BOTFirstDayTypeLastWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR: ld > (min{ldld_ in DAYTYPE} ldld_)}:
-    (StorageLevelDayTypeFinish[r,s,ls,ld-1,y] + sum{lhlh in DAILYTIMEBRACKET: card(lhlh) < card(lh)} NetChargeWithinDay[r,s,ls,ld,lhlh,y]) # sum over lhlh < lh in current day ld
-    >=
-    StorageLowerLimit[r,s,y];
-
-s.t. SC4_UpperLimit_BOTFirstDayTypeLastWeek{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR: ld > (min{ldld_ in DAYTYPE} ldld_)}:
-    (StorageLevelDayTypeFinish[r,s,ls,ld-1,y] + sum{lhlh in DAILYTIMEBRACKET: card(lhlh) < card(lh)} NetChargeWithinDay[r,s,ls,ld,lhlh,y])
-    <=
-    StorageUpperLimit[r,s,y];
-
-# MaxChargeConstraint_rule -> SC5_MaxChargeConstraint
-s.t. SC5_MaxChargeConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    RateOfStorageCharge[r,s,ls,ld,lh,y]
-    <=
-    StorageMaxChargeRate[r,s];
-
-# MaxDischargeConstraint_rule -> SC6_MaxDischargeConstraint
-s.t. SC6_MaxDischargeConstraint{r in REGION, s in STORAGE, ls in SEASON, ld in DAYTYPE, lh in DAILYTIMEBRACKET, y in YEAR}:
-    RateOfStorageDischarge[r,s,ls,ld,lh,y]
-    <=
-    StorageMaxDischargeRate[r,s];
+s.t. CC2_DiscountingCapitalInvestment{r in REGION, t in TECHNOLOGY, y in YEAR}: CapitalInvestment[r,t,y] / ((1 + DiscountRate[r]) ^ (y - min{yy in YEAR} min(yy))) = DiscountedCapitalInvestment[r,t,y];
 
 
-#########			Storage investments (Pyomo names them with _constraint) #############
-# osemosys.txt uses SI1, SI2 etc.
-
-# StorageUpperLimit_constraint -> SI1_StorageUpperLimit
-s.t. SI1_StorageUpperLimit{r in REGION, s in STORAGE, y in YEAR}:
-    AccumulatedNewStorageCapacity[r,s,y] + ResidualStorageCapacity[r,s,y]
-    =
-    StorageUpperLimit[r,s,y];
-
-# StorageLowerLimit_constraint -> SI2_StorageLowerLimit
-s.t. SI2_StorageLowerLimit{r in REGION, s in STORAGE, y in YEAR}:
-    MinStorageCharge[r,s,y] * StorageUpperLimit[r,s,y]
-    =
-    StorageLowerLimit[r,s,y];
-
-# TotalNewStorage_constraint -> SI3_TotalNewStorage
-s.t. SI3_TotalNewStorage{r in REGION, s in STORAGE, y in YEAR}:
-    sum{yy in YEAR: (y - yy < OperationalLifeStorage[r,s]) and (y - yy >= 0)} NewStorageCapacity[r,s,yy]
-    =
-    AccumulatedNewStorageCapacity[r,s,y];
-
-# UndiscountedCapitalInvestmentStorage_constraint -> SI4_UndiscountedCapitalInvestmentStorage
-s.t. SI4_UndiscountedCapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR}:
-    CapitalCostStorage[r,s,y] * NewStorageCapacity[r,s,y]
-    =
-    CapitalInvestmentStorage[r,s,y];
-
-# DiscountingCapitalInvestmentStorage_constraint -> SI5_DiscountingCapitalInvestmentStorage
-s.t. SI5_DiscountingCapitalInvestmentStorage{r in REGION, s in STORAGE, y in YEAR}:
-    CapitalInvestmentStorage[r,s,y] / DiscountFactorStorage[r,s,y] # Using previously defined DiscountFactorStorage
-    =
-    DiscountedCapitalInvestmentStorage[r,s,y];
-# Pyomo: ... / ((1 + model.DiscountRate[r]) ** (y - min(model.YEAR)))
-# osemosys.txt: ... / DiscountFactorStorage[r,s,y]
-# My DiscountFactorStorage is (1 + DiscountRateStorage[r,s]) ^ (y - min_year + 0.0)
-# This matches if DiscountRateStorage = DiscountRate. Which is the default I set.
-
-# SalvageValueStorageAtEndOfPeriod_rule -> Combined to SI6, SI7, SI8 from osemosys.txt
-s.t. SI6_SalvageValueStorageAtEndOfPeriod1{r in REGION, s in STORAGE, y in YEAR: (y + OperationalLifeStorage[r,s] - 1) <= (max{yy in YEAR} yy)}:
-    SalvageValueStorage[r,s,y] = 0;
-
-s.t. SI7_SalvageValueStorageAtEndOfPeriod2{r in REGION, s in STORAGE, y in YEAR:
-    (DepreciationMethod[r]=1 and (y + OperationalLifeStorage[r,s] - 1) > (max{yy in YEAR} yy) and DiscountRateStorage[r,s]=0) or
-    (DepreciationMethod[r]=2 and (y + OperationalLifeStorage[r,s] - 1) > (max{yy in YEAR} yy))}:
-    SalvageValueStorage[r,s,y]
-    =
-    CapitalInvestmentStorage[r,s,y] * (1 - ((max{yy_ in YEAR} yy_) - y + 1) / OperationalLifeStorage[r,s]);
-
-s.t. SI8_SalvageValueStorageAtEndOfPeriod3{r in REGION, s in STORAGE, y in YEAR:
-    DepreciationMethod[r]=1 and (y + OperationalLifeStorage[r,s] - 1) > (max{yy in YEAR} yy) and DiscountRateStorage[r,s] > 0}:
-    SalvageValueStorage[r,s,y]
-    =
-    CapitalInvestmentStorage[r,s,y] * (1 - (((1 + DiscountRateStorage[r,s])^((max{yy_ in YEAR} yy_) - y + 1) - 1) /
-                                        ((1 + DiscountRateStorage[r,s])^OperationalLifeStorage[r,s] - 1)));
-
-# SalvageValueStorageDiscountedToStartYear_rule -> SI9_SalvageValueStorageDiscountedToStartYear
-s.t. SI9_SalvageValueStorageDiscountedToStartYear{r in REGION, s in STORAGE, y in YEAR}:
-    SalvageValueStorage[r,s,y] / ((1 + DiscountRateStorage[r,s])^((max{yy in YEAR} yy) - (min{yy_ in YEAR} yy_) + 1))
-    =
-    DiscountedSalvageValueStorage[r,s,y];
-
-# TotalDiscountedCostByStorage_rule -> SI10_TotalDiscountedCostByStorage
-s.t. SI10_TotalDiscountedCostByStorage{r in REGION, s in STORAGE, y in YEAR}:
-    DiscountedCapitalInvestmentStorage[r,s,y] - DiscountedSalvageValueStorage[r,s,y]
-    =
-    TotalDiscountedStorageCost[r,s,y];
-
-#########       	Capital Costs (TECHNOLOGY) 		     	#############
-# UndiscountedCapitalInvestment_rule -> CC1_UndiscountedCapitalInvestment
-# Pyomo: CapitalCost * NewCapacity = CapitalInvestment
-# osemosys.txt: CapitalCost * NewCapacity * CRF * PvAnnuity = CapitalInvestment
-# This is a major difference. CRF*PvAnnuity is an annuitization factor.
-# Pyomo calculates total investment cost, then later discounts operating costs with a mid-year factor.
-# osemosys.txt objective is sum of TotalDiscountedCost which includes DiscountedCapitalInvestment.
-# The osemosys.txt formulation for CC1 and CC2 effectively calculates annualized capital cost for each year of investment and then discounts that.
-# The Pyomo formulation calculates total upfront capital cost, and discounts that single sum.
-# Given the task is to translate osemosys.py, I should follow its formulation.
-# However, the objective function and other cost variables in osemosys.py are structured to sum up annual costs.
-# Let's check DiscountedCapitalInvestment in Pyomo: CapitalInvestment / ( (1+DR)^(y-min_year) )
-# This is a standard discounting of a lump sum.
-# If CapitalInvestment itself is an annualized value (as per osemosys.txt's CC1), then this is discounting an annuity payment.
-# This is a fundamental modelling choice. The instruction "implement the same model logic as osemosys.py"
-# but "written using the GNU MathProg language, as exemplified in the reference file osemosys.txt" is conflicting here.
-# I will use the osemosys.txt formulation for CapitalCost components (CC1, CC2, SV1-4) because these are written to be compatible with an objective function that sums yearly costs.
-# The Pyomo's DiscountedOperatingCost also uses mid-year discounting, typical for continuous costs over a year.
-# The Pyomo's DiscountedCapitalInvestment uses start-of-year discounting, typical for lump-sum investments.
-# If osemosys.txt structure (CRF*PvAnnuity) is used for CapitalInvestment, then DiscountedCapitalInvestment should also align.
-# osemosys.txt CC2: CapitalInvestment / DiscountFactor[r,y] => (AnnualizedCost) / ( (1+DR)^(y-min_year) )
-# This is discounting an already annualized cost. This is unusual. Typically, you either discount lump sums, or sum PV of annuities.
-# Let's re-verify osemosys.py's costing:
-# TotalDiscountedCostByTechnology = DiscountedOperatingCost + DiscountedCapitalInvestment + DiscountedEmissionsPenalty - DiscountedSalvageValue
-# DiscountedCapitalInvestment = CapitalInvestment / ( (1+DR)^(y-min_year) )
-# CapitalInvestment = CapitalCost * NewCapacity
-# This is a standard calculation of Present Value of investment costs.
-# osemosys.txt is different. I will follow osemosys.py for this section's logic.
-
-s.t. CC1_UndiscountedCapitalInvestment_Pyomo{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    CapitalCost[r,t,y] * NewCapacity[r,t,y]
-    =
-    CapitalInvestment[r,t,y];
-
-s.t. CC2_DiscountedCapitalInvestment_Pyomo{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    CapitalInvestment[r,t,y] / ((1 + DiscountRate[r])^((y - (min{yy in YEAR} yy)))) # y - min_year can be 0
-    =                                                                               # so (1+DR)^0 = 1. Ok.
-    DiscountedCapitalInvestment[r,t,y];
-
+#
+#########           Salvage Value            	#############
+#
+s.t. SV1_SalvageValueAtEndOfPeriod1{r in REGION, t in TECHNOLOGY, y in YEAR: DepreciationMethod[r]=1 && (y + OperationalLife[r,t]-1) > (max{yy in YEAR} max(yy)) && DiscountRate[r]>0}: SalvageValue[r,t,y] = CapitalCost[r,t,y] * NewCapacity[r,t,y] *(1-(((1+DiscountRate[r])^(max{yy in YEAR} max(yy) - y+1)-1)/((1+DiscountRate[r])^OperationalLife[r,t]-1)));
+s.t. SV2_SalvageValueAtEndOfPeriod2{r in REGION, t in TECHNOLOGY, y in YEAR: (DepreciationMethod[r]=1 && (y + OperationalLife[r,t]-1) > (max{yy in YEAR} max(yy)) && DiscountRate[r]=0) || (DepreciationMethod[r]=2 && (y + OperationalLife[r,t]-1) > (max{yy in YEAR} max(yy)))}: SalvageValue[r,t,y] = CapitalCost[r,t,y] * NewCapacity[r,t,y] *(1-(max{yy in YEAR} max(yy) - y+1)/OperationalLife[r,t]);
+s.t. SV3_SalvageValueAtEndOfPeriod3{r in REGION, t in TECHNOLOGY, y in YEAR: (y + OperationalLife[r,t]-1) <= (max{yy in YEAR} max(yy))}: SalvageValue[r,t,y] = 0;
+s.t. SV4_SalvageValueDiscountedToStartYear{r in REGION, t in TECHNOLOGY, y in YEAR}: DiscountedSalvageValue[r,t,y] = SalvageValue[r,t,y]/((1+DiscountRate[r])^(1+max{yy in YEAR} max(yy)-min{yy in YEAR} min(yy)));
+#
 #########        	Operating Costs 		 	#############
-# OperatingCostsVariable_rule -> OC1_OperatingCostsVariable
-# Pyomo: sum(TotalAnnualTechnologyActivityByMode * VariableCost) == AnnualVariableOperatingCost
-# This is summed over m in Pyomo rule, but defined for (r,t,l,y). 'l' seems incorrect in Pyomo constraint if LHS is annual.
-# Pyomo's TotalAnnualTechnologyActivityByMode is indexed (r,t,m,y). VariableCost is (r,t,m,y).
-# So LHS is sum over m of (AnnualActivityByMode * VarCostPerMode) = AnnualVarOpCost. This is fine.
-# The 'l' in Pyomo constraint def must be a typo and should be ignored or means it's for each l.
-# osemosys.txt has it for (r,t,l,y) with condition sum(VarCost) <> 0.
-# If it's for each 'l', then AnnualVariableOperatingCost would be indexed by 'l' too. It's not.
-# It seems the Pyomo constraint should be for (r,t,y).
-# Let's assume it's for (r,t,y) as in osemosys.txt (though osemosys.txt also has 'l' in definition, but not in use of AVOC).
-# osemosys.txt: sum{m} TotalAnnualTechnologyActivityByMode[r,t,m,y] * VariableCost[r,t,m,y] = AnnualVariableOperatingCost[r,t,y];
-# This is correct and matches Pyomo's summation logic if we assume Pyomo constraint is per (r,t,y).
+#
+
 s.t. OC1_OperatingCostsVariable{r in REGION, t in TECHNOLOGY, y in YEAR: sum{m in MODE_OF_OPERATION} VariableCost[r,t,m,y] <> 0}:
-    sum{m in MODE_OF_OPERATION} TotalAnnualTechnologyActivityByMode[r,t,m,y] * VariableCost[r,t,m,y]
-    =
-    AnnualVariableOperatingCost[r,t,y];
-# Added condition from osemosys.txt. Pyomo code implies it by not creating constraint if sum is zero.
+	sum{m in MODE_OF_OPERATION}
+	TotalAnnualTechnologyActivityByMode[r,t,m,y] * VariableCost[r,t,m,y]
+	=
+	AnnualVariableOperatingCost[r,t,y];
 
-# OperatingCostsFixedAnnual_rule -> OC2_OperatingCostsFixedAnnual
 s.t. OC2_OperatingCostsFixedAnnual{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    TotalCapacityAnnual[r,t,y] * FixedCost[r,t,y]
-    =
-    AnnualFixedOperatingCost[r,t,y];
+	TotalCapacityAnnual[r,t,y]*FixedCost[r,t,y]
+	=
+	AnnualFixedOperatingCost[r,t,y];
 
-# OperatingCostsTotalAnnual_rule -> OC3_OperatingCostsTotalAnnual
 s.t. OC3_OperatingCostsTotalAnnual{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    AnnualFixedOperatingCost[r,t,y] + AnnualVariableOperatingCost[r,t,y]
-    =
-    OperatingCost[r,t,y];
+	AnnualFixedOperatingCost[r,t,y] + AnnualVariableOperatingCost[r,t,y]
+	=
+	OperatingCost[r,t,y];
 
-# DiscountedOperatingCostsTotalAnnual_rule -> OC4_DiscountedOperatingCostsTotalAnnual
 s.t. OC4_DiscountedOperatingCostsTotalAnnual{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    OperatingCost[r,t,y] / ((1 + DiscountRate[r])^((y - (min{yy in YEAR} yy)) + 0.5)) # Pyomo: y - min_year + 0.5
-                                                                                    # osemosys.txt: DiscountFactorMid[r,y]
-                                                                                    # This is consistent.
-    =
-    DiscountedOperatingCost[r,t,y];
-
+	OperatingCost[r,t,y] / ((1 + DiscountRate[r]) ^ (y - min{yy in YEAR} min(yy) + 0.5))
+	=
+	DiscountedOperatingCost[r,t,y];
+  
+#
 #########       	Total Discounted Costs	 	#############
-# TotalDiscountedCostByTechnology_rule -> TDC1_TotalDiscountedCostByTechnology
+#
 s.t. TDC1_TotalDiscountedCostByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    DiscountedOperatingCost[r,t,y] + DiscountedCapitalInvestment[r,t,y] + DiscountedTechnologyEmissionsPenalty[r,t,y] - DiscountedSalvageValue[r,t,y]
-    =
-    TotalDiscountedCostByTechnology[r,t,y];
-
-# TotalDiscountedCost_rule -> TDC2_TotalDiscountedCost
+    DiscountedOperatingCost[r,t,y]+DiscountedCapitalInvestment[r,t,y]+DiscountedTechnologyEmissionsPenalty[r,t,y]-DiscountedSalvageValue[r,t,y] = TotalDiscountedCostByTechnology[r,t,y];
 s.t. TDC2_TotalDiscountedCost{r in REGION, y in YEAR}:
-    sum{t in TECHNOLOGY} TotalDiscountedCostByTechnology[r,t,y] + sum{s in STORAGE} TotalDiscountedStorageCost[r,s,y]
-    =
-    TotalDiscountedCost[r,y];
-
+    sum{t in TECHNOLOGY} TotalDiscountedCostByTechnology[r,t,y]+sum{s in STORAGE} TotalDiscountedStorageCost[r,s,y] = TotalDiscountedCost[r,y];
+																																																																													  
+#
 #########      		Total Capacity Constraints 	##############
-# TotalAnnualMaxCapacityConstraint_rule -> TCC1_TotalAnnualMaxCapacityConstraint
-s.t. TCC1_TotalAnnualMaxCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMaxCapacity[r,t,y] <> -1 and TotalAnnualMaxCapacity[r,t,y] <> 99999 } : # 99999 is default for "no limit" often
-    TotalCapacityAnnual[r,t,y]
-    <=
-    TotalAnnualMaxCapacity[r,t,y];
-# osemosys.txt condition: TotalAnnualMaxCapacity[r,t,y] <> -1. Pyomo has no condition (implicit via data).
-# Added 99999 as common alternative for essentially unbounded.
-
-# TotalAnnualMinCapacityConstraint_rule -> TCC2_TotalAnnualMinCapacityConstraint
-s.t. TCC2_TotalAnnualMinCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMinCapacity[r,t,y] > 0}:
-    TotalCapacityAnnual[r,t,y]
-    >=
-    TotalAnnualMinCapacity[r,t,y];
-
-#########           Salvage Value (TECHNOLOGY, Pyomo formulation) #############
-# SalvageValueAtEndOfPeriod1_rule -> SV1_SV2_SV3_SalvageValue_Pyomo
-# Pyomo has one rule, osemosys.txt has 3. I'll try to map Pyomo's single rule.
-# DiscountRate[r] is DiscountRateIdv[r,t] in osemosys.txt CRF/PvAnnuity.
-# But for SV, Pyomo uses model.DiscountRate[r].
-# CapitalCost[r,t,y] * NewCapacity[r,t,y] is CapitalInvestment[r,t,y] if using Pyomo's CC1.
-s.t. SV_Pyomo_Combined{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    if (DepreciationMethod[r] = 1 and ((y + OperationalLife[r,t] - 1) > (max{yy in YEAR} yy)) and DiscountRate[r] > 0) then
-        SalvageValue[r,t,y] = CapitalCost[r,t,y] * NewCapacity[r,t,y] * (1 - (((1 + DiscountRate[r])^((max{yy_ in YEAR} yy_) - y + 1) - 1) / ((1 + DiscountRate[r])^OperationalLife[r,t] - 1)))
-    else if (DepreciationMethod[r] = 1 and ((y + OperationalLife[r,t] - 1) > (max{yy in YEAR} yy)) and DiscountRate[r] = 0) or
-            (DepreciationMethod[r] = 2 and ((y + OperationalLife[r,t] - 1) > (max{yy in YEAR} yy))) then
-        SalvageValue[r,t,y] = CapitalCost[r,t,y] * NewCapacity[r,t,y] * (1 - ((max{yy_ in YEAR} yy_) - y + 1) / OperationalLife[r,t])
-    else
-        SalvageValue[r,t,y] = 0;
-
-# SalvageValueDiscountedToStartYear_rule -> SV4_SalvageValueDiscounted_Pyomo
-s.t. SV4_SalvageValueDiscounted_Pyomo{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    DiscountedSalvageValue[r,t,y]
-    =
-    SalvageValue[r,t,y] / ((1 + DiscountRate[r])^(1 + (max{yy in YEAR} yy) - (min{yy_ in YEAR} yy_)));
-
+#
+s.t. TCC1_TotalAnnualMaxCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMaxCapacity[r,t,y] <> 99999}:
+    TotalCapacityAnnual[r,t,y] <= TotalAnnualMaxCapacity[r,t,y];
+ 
+																																																																																																																		 
+ 
+																																																																																																																																																																																		  
+s.t. TCC2_TotalAnnualMinCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMinCapacity[r,t,y]>0}:
+    TotalCapacityAnnual[r,t,y] >= TotalAnnualMinCapacity[r,t,y];
+#
 #########    		New Capacity Constraints  	##############
-# TotalAnnualMaxNewCapacityConstraint_rule -> NCC1_TotalAnnualMaxNewCapacityConstraint
-s.t. NCC1_TotalAnnualMaxNewCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMaxCapacityInvestment[r,t,y] <> -1 and TotalAnnualMaxCapacityInvestment[r,t,y] <> 99999}:
-    NewCapacity[r,t,y]
-    <=
-    TotalAnnualMaxCapacityInvestment[r,t,y];
-
-# TotalAnnualMinNewCapacityConstraint_rule -> NCC2_TotalAnnualMinNewCapacityConstraint
-s.t. NCC2_TotalAnnualMinNewCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMinCapacityInvestment[r,t,y] > 0}:
-    NewCapacity[r,t,y]
-    >=
-    TotalAnnualMinCapacityInvestment[r,t,y];
-
+#
+s.t. NCC1_TotalAnnualMaxNewCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMaxCapacityInvestment[r,t,y] <> 99999}:
+    NewCapacity[r,t,y] <= TotalAnnualMaxCapacityInvestment[r,t,y];
+ 
+																																																																														
+ 
+s.t. NCC2_TotalAnnualMinNewCapacityConstraint{r in REGION, t in TECHNOLOGY, y in YEAR: TotalAnnualMinCapacityInvestment[r,t,y]>0}:
+    NewCapacity[r,t,y] >= TotalAnnualMinCapacityInvestment[r,t,y];
+#
 #########   		Annual Activity Constraints	##############
-# TotalAnnualTechnologyActivity_rule -> AAC1_TotalAnnualTechnologyActivity
-s.t. AAC1_TotalAnnualTechnologyActivity{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    sum{l in TIMESLICE} RateOfTotalActivity[r,t,l,y] * YearSplit[l,y]
-    =
-    TotalTechnologyAnnualActivity[r,t,y];
-
-# TotalAnnualTechnologyActivityUpperLimit_rule -> AAC2_TotalAnnualTechnologyActivityUpperLimit
-s.t. AAC2_TotalAnnualTechnologyActivityUpperLimit{r in REGION, t in TECHNOLOGY, y in YEAR: TotalTechnologyAnnualActivityUpperLimit[r,t,y] <> -1 and TotalTechnologyAnnualActivityUpperLimit[r,t,y] <> 99999}:
-    TotalTechnologyAnnualActivity[r,t,y]
-    <=
-    TotalTechnologyAnnualActivityUpperLimit[r,t,y];
-
-# TotalAnnualTechnologyActivityLowerLimit_rule -> AAC3_TotalAnnualTechnologyActivityLowerLimit
-s.t. AAC3_TotalAnnualTechnologyActivityLowerLimit{r in REGION, t in TECHNOLOGY, y in YEAR: TotalTechnologyAnnualActivityLowerLimit[r,t,y] > 0}:
-    TotalTechnologyAnnualActivity[r,t,y]
-    >=
-    TotalTechnologyAnnualActivityLowerLimit[r,t,y];
-
+																																																																														
+																																																																																																																																																																																																																																																																																						  
+ 
+																																																																																																													
+ 
+																																																																																																												
+																																																																																							  
+																																																								 
+																																																												 
+	  
+#
+s.t. AAC1_TotalAnnualTechnologyActivity{r in REGION, t in TECHNOLOGY, y in YEAR}: sum{l in TIMESLICE} RateOfTotalActivity[r,t,l,y]*YearSplit[l,y] = TotalTechnologyAnnualActivity[r,t,y];
+s.t. AAC2_TotalAnnualTechnologyActivityUpperLimit{r in REGION, t in TECHNOLOGY, y in YEAR: TotalTechnologyAnnualActivityUpperLimit[r,t,y] <> 99999}: TotalTechnologyAnnualActivity[r,t,y] <= TotalTechnologyAnnualActivityUpperLimit[r,t,y] ;
+s.t. AAC3_TotalAnnualTechnologyActivityLowerLimit{r in REGION, t in TECHNOLOGY, y in YEAR: TotalTechnologyAnnualActivityLowerLimit[r,t,y]>0}: TotalTechnologyAnnualActivity[r,t,y] >= TotalTechnologyAnnualActivityLowerLimit[r,t,y] ;
+#
 #########    		Total Activity Constraints 	##############
-# TotalModelHorizonTechnologyActivity_rule -> TAC1_TotalModelHorizonTechnologyActivity
-s.t. TAC1_TotalModelHorizonTechnologyActivity{r in REGION, t in TECHNOLOGY}:
-    sum{y in YEAR} TotalTechnologyAnnualActivity[r,t,y]
-    =
-    TotalTechnologyModelPeriodActivity[r,t];
+																																																											
+																																																	 
+#
+s.t. TAC1_TotalModelHorizonTechnologyActivity{r in REGION, t in TECHNOLOGY}: sum{y in YEAR} TotalTechnologyAnnualActivity[r,t,y] = TotalTechnologyModelPeriodActivity[r,t];
+s.t. TAC2_TotalModelHorizonTechnologyActivityUpperLimit{r in REGION, t in TECHNOLOGY: TotalTechnologyModelPeriodActivityUpperLimit[r,t]<>99999}: TotalTechnologyModelPeriodActivity[r,t] <= TotalTechnologyModelPeriodActivityUpperLimit[r,t] ;
+s.t. TAC3_TotalModelHorizenTechnologyActivityLowerLimit{r in REGION, t in TECHNOLOGY: TotalTechnologyModelPeriodActivityLowerLimit[r,t]>0}: TotalTechnologyModelPeriodActivity[r,t] >= TotalTechnologyModelPeriodActivityLowerLimit[r,t] ;
+#
+#########   		Reserve Margin Constraint	############## NTS: Should change demand for production
+																																																	 
+																																																											
+#
+s.t. RM1_ReserveMargin_TechnologiesIncluded_In_Activity_Units{r in REGION, l in TIMESLICE, y in YEAR: ReserveMargin[r,y] > 0}:
+	sum {t in TECHNOLOGY}
+	TotalCapacityAnnual[r,t,y] * ReserveMarginTagTechnology[r,t,y] * CapacityToActivityUnit[r,t]
+	=
+	TotalCapacityInReserveMargin[r,y];
 
-# TotalModelHorizonTechnologyActivityUpperLimit_rule -> TAC2_TotalModelHorizonTechnologyActivityUpperLimit
-s.t. TAC2_TotalModelHorizonTechnologyActivityUpperLimit{r in REGION, t in TECHNOLOGY: TotalTechnologyModelPeriodActivityUpperLimit[r,t] <> -1 and TotalTechnologyModelPeriodActivityUpperLimit[r,t] <> 99999}:
-    TotalTechnologyModelPeriodActivity[r,t]
-    <=
-    TotalTechnologyModelPeriodActivityUpperLimit[r,t];
-
-# TotalModelHorizonTechnologyActivityLowerLimit_rule -> TAC3_TotalModelHorizonTechnologyActivityLowerLimit
-s.t. TAC3_TotalModelHorizenTechnologyActivityLowerLimit{r in REGION, t in TECHNOLOGY: TotalTechnologyModelPeriodActivityLowerLimit[r,t] > 0}: # Corrected typo "Horizen"
-    TotalTechnologyModelPeriodActivity[r,t]
-    >=
-    TotalTechnologyModelPeriodActivityLowerLimit[r,t];
-
-#########   		Emissions Accounting		##############
-# AnnualEmissionProductionByMode_rule -> E1_AnnualEmissionProductionByMode
-s.t. E1_AnnualEmissionProductionByMode{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR: EmissionActivityRatio[r,t,e,m,y] <> 0}:
-    EmissionActivityRatio[r,t,e,m,y] * TotalAnnualTechnologyActivityByMode[r,t,m,y]
-    =
-    AnnualTechnologyEmissionByMode[r,t,e,m,y];
-# Pyomo else: AnnualTechnologyEmissionByMode = 0. This must be added.
-s.t. E1_AnnualEmissionProductionByMode_Zero{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR: EmissionActivityRatio[r,t,e,m,y] = 0}:
-    AnnualTechnologyEmissionByMode[r,t,e,m,y] = 0;
-
-# AnnualEmissionProduction_rule -> E2_AnnualEmissionProduction
-s.t. E2_AnnualEmissionProduction{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR}:
-    sum{m in MODE_OF_OPERATION} AnnualTechnologyEmissionByMode[r,t,e,m,y]
-    =
-    AnnualTechnologyEmission[r,t,e,y];
-
-# EmissionPenaltyByTechAndEmission_rule -> E3_EmissionsPenaltyByTechAndEmission
-s.t. E3_EmissionsPenaltyByTechAndEmission{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR: EmissionsPenalty[r,e,y] <> 0}:
-    AnnualTechnologyEmission[r,t,e,y] * EmissionsPenalty[r,e,y]
-    =
-    AnnualTechnologyEmissionPenaltyByEmission[r,t,e,y];
-# If EmissionsPenalty is 0, then ATEPBE should be 0.
-s.t. E3_EmissionsPenaltyByTechAndEmission_Zero{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR: EmissionsPenalty[r,e,y] = 0}:
-    AnnualTechnologyEmissionPenaltyByEmission[r,t,e,y] = 0;
-
-
-# EmissionsPenaltyByTechnology_rule -> E4_EmissionsPenaltyByTechnology
-s.t. E4_EmissionsPenaltyByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    sum{e in EMISSION} AnnualTechnologyEmissionPenaltyByEmission[r,t,e,y]
-    =
-    AnnualTechnologyEmissionsPenalty[r,t,y];
-
-# DiscountedEmissionsPenaltyByTechnology_rule -> E5_DiscountedEmissionsPenaltyByTechnology
-s.t. E5_DiscountedEmissionsPenaltyByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}:
-    AnnualTechnologyEmissionsPenalty[r,t,y] / ((1 + DiscountRate[r])^((y - (min{yy in YEAR} yy)) + 0.5))
-    =
-    DiscountedTechnologyEmissionsPenalty[r,t,y];
-
-# EmissionsAccounting1_rule -> E6_EmissionsAccounting1
-s.t. E6_EmissionsAccounting1{r in REGION, e in EMISSION, y in YEAR}:
-    sum{t in TECHNOLOGY} AnnualTechnologyEmission[r,t,e,y]
-    =
-    AnnualEmissions[r,e,y];
-
-# EmissionsAccounting2_rule -> E7_EmissionsAccounting2
-s.t. E7_EmissionsAccounting2{r in REGION, e in EMISSION}:
-    sum{y in YEAR} AnnualEmissions[r,e,y]
-    =
-    ModelPeriodEmissions[r,e] - ModelPeriodExogenousEmission[r,e]; # Note: osemosys.txt has + ModelPeriodExogenousEmission. Pyomo has -.
-                                                                    # This implies ModelPeriodEmissions is total including exogenous.
-                                                                    # If ModelPeriodEmissions is only endogenous, then Pyomo is correct.
-                                                                    # AnnualEmissions is endogenous. So sum(AnnualEmissions) = ModelPeriodEndogenous.
-                                                                    # If ModelPeriodEmissions var is meant to be total, then ModelPeriodEndogenous = Total - Exogenous.
-                                                                    # This is consistent with Pyomo.
-
-# AnnualEmissionsLimit_rule -> E8_AnnualEmissionsLimit
-s.t. E8_AnnualEmissionsLimit{r in REGION, e in EMISSION, y in YEAR: AnnualEmissionLimit[r,e,y] <> -1 and AnnualEmissionLimit[r,e,y] <> 99999}:
-    AnnualEmissions[r,e,y] + AnnualExogenousEmission[r,e,y] # Total annual emission
-    <=
-    AnnualEmissionLimit[r,e,y];
-
-# ModelPeriodEmissionsLimit_rule -> E9_ModelPeriodEmissionsLimit
-s.t. E9_ModelPeriodEmissionsLimit{r in REGION, e in EMISSION: ModelPeriodEmissionLimit[r,e] <> -1 and ModelPeriodEmissionLimit[r,e] <> 99999}:
-    ModelPeriodEmissions[r,e] # This is total including exogenous as per E7 interpretation
-    <=
-    ModelPeriodEmissionLimit[r,e];
-
-#########   		Reserve Margin Constraint	##############
-# ReserveMargin_TechnologiesIncluded_rule -> RM1_ReserveMargin_TechnologiesIncluded
-# Pyomo constraint is per (r,l,y). LHS sum over t, RHS is TotalCapacityInReserveMargin[r,y] (no l index).
-# This means TotalCapacityInReserveMargin[r,y] is defined multiple times if there are multiple 'l'.
-# osemosys.txt is (r,l,y). This is fine, value will be same for all 'l'.
-s.t. RM1_ReserveMargin_TechnologiesIncluded{r in REGION, l in TIMESLICE, y in YEAR: ReserveMargin[r,y] > 0}:
-    sum {t_ in TECHNOLOGY} (TotalCapacityAnnual[r,t_,y] * ReserveMarginTagTechnology[r,t_,y] * CapacityToActivityUnit[r,t_])
-    =
-    TotalCapacityInReserveMargin[r,y]; # Note t_ to avoid conflict with outer loop if any
-
-# ReserveMargin_FuelsIncluded_rule -> RM2_ReserveMargin_FuelsIncluded
 s.t. RM2_ReserveMargin_FuelsIncluded{r in REGION, l in TIMESLICE, y in YEAR: ReserveMargin[r,y] > 0}:
-    sum {f_ in FUEL} (RateOfProduction[r,l,f_,y] * ReserveMarginTagFuel[r,f_,y])
-    =
-    DemandNeedingReserveMargin[r,l,y]; # Note f_
+	sum {f in FUEL}
+	RateOfProduction[r,l,f,y] * ReserveMarginTagFuel[r,f,y]
+	=
+	DemandNeedingReserveMargin[r,l,y];
 
-# ReserveMarginConstraint_rule -> RM3_ReserveMargin_Constraint
 s.t. RM3_ReserveMargin_Constraint{r in REGION, l in TIMESLICE, y in YEAR: ReserveMargin[r,y] > 0}:
-    DemandNeedingReserveMargin[r,l,y] * ReserveMargin[r,y]
-    <=
-    TotalCapacityInReserveMargin[r,y];
+	DemandNeedingReserveMargin[r,l,y] * ReserveMargin[r,y]
+	<=
+	TotalCapacityInReserveMargin[r,y];
 
-#########   		RE Production Target (Not in osemosys.py given, but in osemosys.txt) ##############
-# I will add these as they are in osemosys.txt and part of a standard OSeMOSYS model.
-# If there are no RETagTechnology or RETagFuel params in data, these constraints won't break.
+#
+#########   		RE Production Target		############## NTS: Should change demand for production
+  
 
-s.t. RE1_FuelProductionByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR}:
-    sum{l in TIMESLICE} ProductionByTechnology[r,l,t,f,y]
-    =
-    ProductionByTechnologyAnnual[r,t,f,y];
+ 
+																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																																	
+#
+s.t. RE1_FuelProductionByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR}: sum{l in TIMESLICE} ProductionByTechnology[r,l,t,f,y] = ProductionByTechnologyAnnual[r,t,f,y];
+s.t. RE2_TechIncluded{r in REGION, y in YEAR}: sum{t in TECHNOLOGY, f in FUEL} ProductionByTechnologyAnnual[r,t,f,y]*RETagTechnology[r,t,y] = TotalREProductionAnnual[r,y];
+s.t. RE3_FuelIncluded{r in REGION, y in YEAR}: sum{l in TIMESLICE, f in FUEL} RateOfProduction[r,l,f,y]*YearSplit[l,y]*RETagFuel[r,f,y] = RETotalProductionOfTargetFuelAnnual[r,y];
+s.t. RE4_EnergyConstraint{r in REGION, y in YEAR}:REMinProductionTarget[r,y]*RETotalProductionOfTargetFuelAnnual[r,y] <= TotalREProductionAnnual[r,y];
+s.t. RE5_FuelUseByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR}: sum{l in TIMESLICE} RateOfUseByTechnology[r,l,t,f,y]*YearSplit[l,y] = UseByTechnologyAnnual[r,t,f,y];
+#
+#########   		Emissions Accounting		##############
+																														 
+																																																				 
+ 
+																																																																																																																																																																																																																																																																																																																																																																																																											 
+																																																																																																																																																																																																																																																																																																																																																																			 
+																																																																																																																																																														 
+																																																																																																						
+																																																																																																	
+	   
+																																																																  
+#
+s.t. E1_AnnualEmissionProductionByMode{r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR:
+									   EmissionActivityRatio[r,t,e,m,y] <> 0}:
+	EmissionActivityRatio[r,t,e,m,y] * TotalAnnualTechnologyActivityByMode[r,t,m,y]
+	=
+	AnnualTechnologyEmissionByMode[r,t,e,m,y];
 
-s.t. RE2_TechIncluded{r in REGION, y in YEAR: sum{t in TECHNOLOGY, f in FUEL} RETagTechnology[r,t,y]>0}: # Condition added for safety
-    sum{t in TECHNOLOGY, f in FUEL} ProductionByTechnologyAnnual[r,t,f,y] * RETagTechnology[r,t,y]
-    =
-    TotalREProductionAnnual[r,y];
+s.t. E2_AnnualEmissionProduction{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR}:
+	sum{m in MODE_OF_OPERATION}
+	AnnualTechnologyEmissionByMode[r,t,e,m,y]
+	=
+	AnnualTechnologyEmission[r,t,e,y];
 
-s.t. RE3_FuelIncluded{r in REGION, y in YEAR: sum{f in FUEL} RETagFuel[r,f,y]>0}: # Condition added for safety
-    sum{l in TIMESLICE, f in FUEL} RateOfProduction[r,l,f,y] * YearSplit[l,y] * RETagFuel[r,f,y]
-    =
-    RETotalProductionOfTargetFuelAnnual[r,y];
+s.t. E3_EmissionsPenaltyByTechAndEmission{r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR: EmissionsPenalty[r,e,y] <> 0}:
+	AnnualTechnologyEmission[r,t,e,y] * EmissionsPenalty[r,e,y]
+	=
+	AnnualTechnologyEmissionPenaltyByEmission[r,t,e,y];
 
-s.t. RE4_EnergyConstraint{r in REGION, y in YEAR: REMinProductionTarget[r,y] > 0}:
-    REMinProductionTarget[r,y] * RETotalProductionOfTargetFuelAnnual[r,y]
-    <=
-    TotalREProductionAnnual[r,y];
+s.t. E4_EmissionsPenaltyByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}:
+	sum{e in EMISSION} AnnualTechnologyEmissionPenaltyByEmission[r,t,e,y]
+	=
+	AnnualTechnologyEmissionsPenalty[r,t,y];
 
-s.t. RE5_FuelUseByTechnologyAnnual{r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR}: # This is for accounting, not directly RE target.
-    sum{l in TIMESLICE} UseByTechnology[r,l,t,f,y] # UseByTechnology comes from RateOfUseByTechnology * YearSplit
-    =
-    UseByTechnologyAnnual[r,t,f,y];
+s.t. E5_DiscountedEmissionsPenaltyByTechnology{r in REGION, t in TECHNOLOGY, y in YEAR}:
+	AnnualTechnologyEmissionsPenalty[r,t,y] / ((1 + DiscountRate[r]) ^ (y - min{yy in YEAR} min(yy) + 0.5))
+	=
+	DiscountedTechnologyEmissionsPenalty[r,t,y];
 
+s.t. E6_EmissionsAccounting1{r in REGION, e in EMISSION, y in YEAR}:
+	sum{t in TECHNOLOGY}
+	AnnualTechnologyEmission[r,t,e,y]
+	=
+	AnnualEmissions[r,e,y];
 
+s.t. E7_EmissionsAccounting2{r in REGION, e in EMISSION}:
+	sum{y in YEAR} AnnualEmissions[r,e,y]
+	=
+	ModelPeriodEmissions[r,e] - ModelPeriodExogenousEmission[r,e];
+
+s.t. E8_AnnualEmissionsLimit{r in REGION, e in EMISSION, y in YEAR: AnnualEmissionLimit[r, e, y] <> 99999}:
+	AnnualEmissions[r,e,y] + AnnualExogenousEmission[r,e,y]
+	<=
+	AnnualEmissionLimit[r,e,y];
+
+s.t. E9_ModelPeriodEmissionsLimit{r in REGION, e in EMISSION: ModelPeriodEmissionLimit[r, e] <> 99999}:
+	ModelPeriodEmissions[r,e]
+	<=
+	ModelPeriodEmissionLimit[r,e];
+#
+###########################################################################################
+#
+ 
 # Solve the problem
 solve;
-
-# Output statements copied from osemosys.txt
-# ... (printf and table statements from osemosys.txt) ...
-# This part is very long, I will add it carefully.
-# For now, ending the model structure.
-
-####        Summary results         ###
-#
-###                Total costs and emissions by region        ###
-#
-printf "\n" > ResultsPath & "/SelectedResults.csv";
-printf "Summary" >> ResultsPath & "/SelectedResults.csv";
-for {r in REGION}         {printf ",%s", r >> ResultsPath & "/SelectedResults.csv";
-                                        }
-printf "\n" >> ResultsPath & "/SelectedResults.csv";
-printf "Emissions" >> ResultsPath & "/SelectedResults.csv";
-printf "\n" >> ResultsPath & "/SelectedResults.csv";
-for {r in REGION}         {
-                                        for {e in EMISSION}         {
-                                                                                        printf ",%s", e >> ResultsPath & "/SelectedResults.csv";
-                                                                                        printf ",%g", sum{y in YEAR} AnnualEmissions[r,e,y] + ModelPeriodExogenousEmission[r,e] >> ResultsPath & "/SelectedResults.csv"; # Using AnnualEmissions as per E6, E7
-                                                                                        printf "\n" >> ResultsPath & "/SelectedResults.csv";
-                                                                                        }
-                                        }
-printf "\n" >> ResultsPath & "/SelectedResults.csv";
-printf "Cost" >> ResultsPath & "/SelectedResults.csv";
-for {r in REGION} {printf ",%g", sum{y in YEAR} TotalDiscountedCost[r,y] >> ResultsPath & "/SelectedResults.csv"; # Using TotalDiscountedCost as per objective
-}
-printf "\n" >> ResultsPath & "/SelectedResults.csv";
-
-# Other printf and table statements from osemosys.txt would follow here.
-# Due to length limits, I'll add a few representative table statements.
-
-table AccumulatedNewCapacityResults
-	{r in REGION, t in TECHNOLOGY, y in YEAR:
-		AccumulatedNewCapacity[r, t, y] > 0}
-
-	OUT "CSV"
-	ResultsPath & "/AccumulatedNewCapacity.csv" :
-	r~REGION, t~TECHNOLOGY, y~YEAR, AccumulatedNewCapacity[r, t, y]~VALUE;
-
-table AnnualEmissionsResults
-	{r in REGION, e in EMISSION, y in YEAR:
-		AnnualEmissions[r, e, y] > 0}
-
-	OUT "CSV"
-	ResultsPath & "/AnnualEmissions.csv" :
-	r~REGION, e~EMISSION, y~YEAR, AnnualEmissions[r, e, y]~VALUE;
-
-table NewCapacityResults
-	{r in REGION, t in TECHNOLOGY, y in YEAR:
-		NewCapacity[r, t, y] > 0}
-	OUT "CSV"
-	ResultsPath & "/NewCapacity.csv" :
-	r~REGION, t~TECHNOLOGY, y~YEAR,
-	NewCapacity[r, t, y]~VALUE;
-
-table TotalDiscountedCostResults
-	{r in REGION, y in YEAR: TotalDiscountedCost[r, y] > 0}
-	OUT "CSV"
-	ResultsPath & "/TotalDiscountedCost.csv" :
-	r~REGION, y~YEAR,
-	TotalDiscountedCost[r, y]~VALUE;
-
-# Adding all table statements from osemosys.txt for completeness
-table AnnualFixedOperatingCostResults {r in REGION, t in TECHNOLOGY, y in YEAR: AnnualFixedOperatingCost[r, t, y] > 0} OUT "CSV" ResultsPath & "/AnnualFixedOperatingCost.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, AnnualFixedOperatingCost[r, t, y]~VALUE;
-table AnnualTechnologyEmissionResults {r in REGION, t in TECHNOLOGY, e in EMISSION, y in YEAR: AnnualTechnologyEmission[r, t, e, y] > 0} OUT "CSV" ResultsPath & "/AnnualTechnologyEmission.csv" : r~REGION, t~TECHNOLOGY, e~EMISSION, y~YEAR, AnnualTechnologyEmission[r, t, e, y]~VALUE;
-table AnnualTechnologyEmissionByModeResults {r in REGION, t in TECHNOLOGY, e in EMISSION, m in MODE_OF_OPERATION, y in YEAR: AnnualTechnologyEmissionByMode[r, t, e, m, y] > 0} OUT "CSV" ResultsPath & "/AnnualTechnologyEmissionByMode.csv" : r~REGION, t~TECHNOLOGY, e~EMISSION, m~MODE_OF_OPERATION, y~YEAR, AnnualTechnologyEmissionByMode[r, t, e, m, y]~VALUE;
-table AnnualVariableOperatingCostResults {r in REGION, t in TECHNOLOGY, y in YEAR: AnnualVariableOperatingCost[r, t, y] > 0} OUT "CSV" ResultsPath & "/AnnualVariableOperatingCost.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, AnnualVariableOperatingCost[r, t, y]~VALUE;
-table CapitalInvestmentResults {r in REGION, t in TECHNOLOGY, y in YEAR: CapitalInvestment[r, t, y] > 0} OUT "CSV" ResultsPath & "/CapitalInvestment.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, CapitalInvestment[r, t, y]~VALUE;
-table DemandResults {r in REGION, l in TIMESLICE, f in FUEL, y in YEAR: Demand[r, l, f, y] > 0} OUT "CSV" ResultsPath & "/Demand.csv" : r~REGION, l~TIMESLICE, f~FUEL, y~YEAR, Demand[r, l, f, y]~VALUE;
-table DiscountedSalvageValueResults {r in REGION, t in TECHNOLOGY, y in YEAR: DiscountedSalvageValue[r, t, y] > 0} OUT "CSV" ResultsPath & "/DiscountedSalvageValue.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, DiscountedSalvageValue[r, t, y]~VALUE;
-table DiscountedTechnologyEmissionsPenaltyResults {r in REGION, t in TECHNOLOGY, y in YEAR: DiscountedTechnologyEmissionsPenalty[r, t, y] > 0} OUT "CSV" ResultsPath & "/DiscountedTechnologyEmissionsPenalty.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, DiscountedTechnologyEmissionsPenalty[r, t, y]~VALUE;
-table NewStorageCapacityResults {r in REGION, s in STORAGE, y in YEAR: NewStorageCapacity[r, s, y] > 0} OUT "CSV" ResultsPath & "/NewStorageCapacity.csv" : r~REGION, s~STORAGE, y~YEAR, NewStorageCapacity[r, s, y]~VALUE;
-table NumberOfNewTechnologyUnitsResults {r in REGION, t in TECHNOLOGY, y in YEAR: NumberOfNewTechnologyUnits[r, t, y] > 0} OUT "CSV" ResultsPath & "/NumberOfNewTechnologyUnits.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, NumberOfNewTechnologyUnits[r, t, y]~VALUE;
-table ProductionByTechnologyResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR: ProductionByTechnology[r, l, t, f, y] > 0} OUT "CSV" ResultsPath & "/ProductionByTechnology.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, f~FUEL, y~YEAR, ProductionByTechnology[r, l, t, f, y]~VALUE;
-table ProductionByTechnologyAnnualResults {r in REGION, t in TECHNOLOGY, f in FUEL, y in YEAR: ProductionByTechnologyAnnual[r, t, f, y] > 0} OUT "CSV" ResultsPath & "/ProductionByTechnologyAnnual.csv" : r~REGION, t~TECHNOLOGY, f~FUEL, y~YEAR, ProductionByTechnologyAnnual[r, t, f, y]~VALUE;
-table RateOfActivityResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR: RateOfActivity[r, l, t, m, y] > 0} OUT "CSV" ResultsPath & "/RateOfActivity.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, m~MODE_OF_OPERATION, y~YEAR, RateOfActivity[r, l, t, m, y]~VALUE;
-table RateOfProductionByTechnologyResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR: RateOfProductionByTechnology[r, l, t, f, y] > 0} OUT "CSV" ResultsPath & "/RateOfProductionByTechnology.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, f~FUEL, y~YEAR, RateOfProductionByTechnology[r, l, t, f, y]~VALUE;
-table RateOfProductionByTechnologyByModeResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, f in FUEL, y in YEAR: RateOfProductionByTechnologyByMode[r, l, t, m, f, y] > 0} OUT "CSV" ResultsPath & "/RateOfProductionByTechnologyByMode.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, m~MODE_OF_OPERATION, f~FUEL, y~YEAR, RateOfProductionByTechnologyByMode[r, l, t, m, f, y]~VALUE;
-table RateOfUseByTechnologyResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR: RateOfUseByTechnology[r, l, t, f, y] > 0} OUT "CSV" ResultsPath & "/RateOfUseByTechnology.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, f~FUEL, y~YEAR, RateOfUseByTechnology[r, l, t, f, y]~VALUE;
-table RateOfUseByTechnologyByModeResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, m in MODE_OF_OPERATION, f in FUEL, y in YEAR: RateOfUseByTechnologyByMode[r, l, t, m, f, y] > 0} OUT "CSV" ResultsPath & "/RateOfUseByTechnologyByMode.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, m~MODE_OF_OPERATION, f~FUEL, y~YEAR, RateOfUseByTechnologyByMode[r, l, t, m, f, y]~VALUE;
-table SalvageValueResults {r in REGION, t in TECHNOLOGY, y in YEAR: SalvageValue[r, t, y] > 0} OUT "CSV" ResultsPath & "/SalvageValue.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, SalvageValue[r, t, y]~VALUE;
-table SalvageValueStorageResults {r in REGION, s in STORAGE, y in YEAR: SalvageValueStorage[r, s, y] > 0} OUT "CSV" ResultsPath & "/SalvageValueStorage.csv" : r~REGION, s~STORAGE, y~YEAR, SalvageValueStorage[r, s, y]~VALUE;
-table TotalAnnualTechnologyActivityByModeResults {r in REGION, t in TECHNOLOGY, m in MODE_OF_OPERATION, y in YEAR: TotalAnnualTechnologyActivityByMode[r, t, m, y] > 0} OUT "CSV" ResultsPath & "/TotalAnnualTechnologyActivityByMode.csv" : r~REGION, t~TECHNOLOGY, m~MODE_OF_OPERATION, y~YEAR, TotalAnnualTechnologyActivityByMode[r, t, m, y]~VALUE;
-table TotalCapacityAnnualResults {r in REGION, t in TECHNOLOGY, y in YEAR: TotalCapacityAnnual[r, t, y] > 0} OUT "CSV" ResultsPath & "/TotalCapacityAnnual.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, TotalCapacityAnnual[r, t, y]~VALUE;
-table TotalTechnologyAnnualActivityResults {r in REGION, t in TECHNOLOGY, y in YEAR: TotalTechnologyAnnualActivity[r, t, y] > 0} OUT "CSV" ResultsPath & "/TotalTechnologyAnnualActivity.csv" : r~REGION, t~TECHNOLOGY, y~YEAR, TotalTechnologyAnnualActivity[r, t, y]~VALUE;
-table TotalTechnologyModelPeriodActivityResults {r in REGION, t in TECHNOLOGY: TotalTechnologyModelPeriodActivity[r, t] > 0} OUT "CSV" ResultsPath & "/TotalTechnologyModelPeriodActivity.csv" : r~REGION, t~TECHNOLOGY, TotalTechnologyModelPeriodActivity[r, t]~VALUE;
-table TradeResults {r in REGION, rr in REGION, l in TIMESLICE, f in FUEL, y in YEAR: Trade[r, rr, l, f, y] <> 0} OUT "CSV" ResultsPath & "/Trade.csv" : r~REGION, rr~REGION, l~TIMESLICE, f~FUEL, y~YEAR, Trade[r, rr, l, f, y]~VALUE;
-table UseByTechnologyResults {r in REGION, l in TIMESLICE, t in TECHNOLOGY, f in FUEL, y in YEAR: UseByTechnology[r, l, t, f, y] > 0} OUT "CSV" ResultsPath & "/UseByTechnology.csv" : r~REGION, l~TIMESLICE, t~TECHNOLOGY, f~FUEL, y~YEAR, UseByTechnology[r, l, t, f, y]~VALUE;
-
 
 end;
