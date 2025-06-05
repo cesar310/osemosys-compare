@@ -580,7 +580,7 @@ s.t. S11_and_S12_StorageLevelDayTypeStart{r in REGION, s in STORAGE, ls in SEASO
 	if ld = min{ldld in DAYTYPE} min(ldld)
 	then StorageLevelSeasonStart[r,s,ls,y]
 	else StorageLevelDayTypeStart[r,s,ls,ld-1,y] + sum{lh in DAILYTIMEBRACKET}
-	NetChargeWithinDay[r,s,ls,ld-1,lh,y] # Removed * DaysInDayType[ls,ld-1,y]
+	NetChargeWithinDay[r,s,ls,ld-1,lh,y] * DaysInDayType[ls,ld-1,y] # Re-added * DaysInDayType[ls,ld-1,y]
 	=
 	StorageLevelDayTypeStart[r,s,ls,ld,y];
 

@@ -284,6 +284,30 @@ The following sections of `osemosys.txt` were largely unchanged as their structu
 *   **`solve;` command.**
 *   **Results output section (`printf`, `table`):** These were retained for user convenience, though their specific calculations might need review if based on removed parameters (the primary cost and emission summary `printf` statements were reviewed in the previous step when creating `osemosys1.txt` and would be implicitly correct now if `TotalDiscountedCost` and `AnnualEmissions` are correctly calculated by the modified constraints).
 
-## 5. Conclusion
+## 5. Further Modifications for Feasibility (Post-Initial Alignment)
 
-With these modifications, the `osemosys.txt` file now more accurately reflects the specific mathematical logic and economic assumptions of the `osemosys.py` model. This alignment ensures that both model files, when run with equivalent datasets, will produce consistent results.
+Subsequent to the initial alignment efforts described above, model runs indicated potential infeasibility issues. A specific modification was made to `osemosys.txt` to address this, diverging from the direct translation of `osemosys.py` for one constraint to ensure model integrity.
+
+### Storage Balancing Equations (Revisited)
+
+1.  **Constraint Name:** `S11_and_S12_StorageLevelDayTypeStart` (Storage Level DayType Start)
+    *   **Corresponding Pyomo Rule:** `StorageLevelDayTypeStart_rule`
+    *   **Reason for Modification (New):** To address model infeasibility. The previous modification (in Section 3, under Storage Balancing Equations, which removed `* DaysInDayType[ls,ld-1,y]` to align with `osemosys.py`) is suspected to have caused an energy imbalance in storage level calculations between day types. This change reverts the constraint to its original `osemosys.txt` formulation (which was also the formulation in `osemosys1.txt` before it was modified to strictly follow `osemosys.py` on this point). This version is believed to better represent the physical energy balance when a daytype occurs multiple times within a season by correctly scaling the net charge for the duration of the daytype.
+    *   **Details of Modification:**
+        *   **Previous (problematic) formulation in `osemosys.txt` (after initial alignment with `osemosys.py`):**
+            ```mathprog
+            else StorageLevelDayTypeStart[r,s,ls,ld-1,y] + sum{lh in DAILYTIMEBRACKET} NetChargeWithinDay[r,s,ls,ld-1,lh,y]
+            =
+            StorageLevelDayTypeStart[r,s,ls,ld,y];
+            ```
+        *   **New (corrected) formulation in `osemosys.txt` (reverted to include `DaysInDayType`):**
+            ```mathprog
+            else StorageLevelDayTypeStart[r,s,ls,ld-1,y] + sum{lh in DAILYTIMEBRACKET} NetChargeWithinDay[r,s,ls,ld-1,lh,y] * DaysInDayType[ls,ld-1,y]
+            =
+            StorageLevelDayTypeStart[r,s,ls,ld,y];
+            ```
+        *   This change means `osemosys.txt` now intentionally deviates from the literal translation of `osemosys.py` for this specific line to ensure model integrity and feasibility.
+
+## 6. Conclusion
+
+The `osemosys.txt` file has been modified to reflect the mathematical logic of `osemosys.py` as closely as possible. Key parameters and constraint formulations were adjusted to align with `osemosys.py`'s approach to economic calculations (e.g., capital costs, salvage values) and specific conditional logic. One specific modification to the storage balancing equation `S11_and_S12_StorageLevelDayTypeStart` was made post-initial alignment to address feasibility concerns, thereby prioritizing model robustness for that constraint over a strict line-by-line equivalence with the `osemosys.py` version. The goal is to have a functionally equivalent and solvable MathProg model.
